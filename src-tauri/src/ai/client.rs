@@ -5,6 +5,10 @@ use crate::ai::ChatMessage;
 /// Whether a provider/model supports vision (image) inputs.
 /// DeepSeek, plain text models, and custom endpoints without explicit vision
 /// support should NOT receive screenshots — they return API errors otherwise.
+pub fn model_supports_vision(model: &CustomModel) -> bool {
+    supports_vision(model)
+}
+
 fn supports_vision(model: &CustomModel) -> bool {
     let provider = model.provider_type.to_lowercase();
     let model_name = model.model_name.to_lowercase();

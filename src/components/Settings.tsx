@@ -2,7 +2,21 @@ import React, { useState, useEffect } from "react";
 import { useStore } from "../store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, Trash2, Loader2, ToggleLeft, ToggleRight, Check, XCircle, Key, Keyboard, AlertTriangle, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Loader2, ToggleLeft, ToggleRight, Check, XCircle, Key, Keyboard, AlertTriangle, RefreshCw, Eye, EyeOff, Type, Code, PenLine } from "lucide-react";
+
+/** Returns what capabilities a model actually has (overriding DB flags with real API knowledge) */
+function getModelCapabilities(provider: string, modelName: string): {
+  vision: boolean; text: boolean; coding: boolean; writing: boolean
+} {
+  const p = provider.toLowerCase();
+  const m = modelName.toLowerCase();
+  const vision =
+    (p === "openai" && (m.includes("gpt-4o") || m.includes("gpt-4-turbo") || m.includes("o1") || m.includes("o3") || m.includes("o4"))) ||
+    (p === "anthropic" && (m.includes("claude-3") || m.includes("claude-opus") || m.includes("claude-sonnet") || m.includes("claude-haiku"))) ||
+    (p === "openrouter" && (m.includes("gpt-4o") || m.includes("claude-3") || m.includes("gemini") || m.includes("vision") || m.includes("qwen"))) ||
+    (p === "custom" && (m.includes("vision") || m.includes("llava")));
+  return { vision, text: true, coding: true, writing: true };
+}
 
 export const Settings: React.FC = () => {
   const { models, addCustomModel, deleteCustomModel, testModel, theme, setTheme } = useStore();
@@ -282,21 +296,50 @@ export const Settings: React.FC = () => {
             <h4 className="text-xs font-bold text-text uppercase tracking-wider">Configure Provider Payload</h4>
 
             {/* Provider Tabs */}
-            <div className="grid grid-cols-5 gap-2">
-              {["openai", "anthropic", "deepseek", "openrouter", "custom"].map((p) => (
-                <button
-                  type="button"
-                  key={p}
-                  onClick={() => handleProviderChange(p)}
-                  className={`py-1.5 text-xs font-semibold rounded-md border text-center capitalize transition-colors ${
-                    provider === p
-                      ? "bg-accent border-accent text-accent-contrast"
-                      : "bg-surface3 border-border text-text-secondary hover:text-text"
-                  }`}
-                >
-                  {p}
-                </button>
-              ))}
+            <div className="space-y-2">
+              <label className="block text-[10px] font-bold text-text-secondary uppercase tracking-wider">Provider</label>
+              <div className="grid grid-cols-5 gap-2">
+                {[
+                  { id: "openai",     label: "OpenAI",    vision: true },
+                  { id: "anthropic",  label: "Anthropic", vision: true },
+                  { id: "deepseek",   label: "DeepSeek",  vision: false },
+                  { id: "openrouter", label: "OpenRouter", vision: true },
+                  { id: "custom",     label: "Custom",    vision: false },
+                ].map((p) => (
+                  <button
+                    type="button"
+                    key={p.id}
+                    onClick={() => handleProviderChange(p.id)}
+                    className={`py-2 px-1 text-xs font-semibold rounded-md border text-center capitalize transition-colors ${
+                      provider === p.id
+                        ? "bg-accent border-accent text-accent-contrast"
+                        : "bg-surface3 border-border text-text-secondary hover:text-text"
+                    }`}
+                  >
+                    {p.label}
+                    <span className={`block text-[8px] font-bold mt-0.5 ${
+                      provider === p.id ? "text-accent-contrast/70" :
+                      p.vision ? "text-success" : "text-warning"
+                    }`}>
+                      {p.vision ? "Vision ✓" : "Text only"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Provider capability note */}
+              {(provider === "deepseek") && (
+                <div className="flex items-center gap-1.5 p-2 bg-warning/10 border border-warning/20 rounded text-[10px] text-warning font-semibold">
+                  <EyeOff className="w-3 h-3 shrink-0" />
+                  DeepSeek doesn't support screen vision. Automation works from text only.
+                </div>
+              )}
+              {(provider === "openai" || provider === "anthropic" || provider === "openrouter") && (
+                <div className="flex items-center gap-1.5 p-2 bg-success/10 border border-success/20 rounded text-[10px] text-success font-semibold">
+                  <Eye className="w-3 h-3 shrink-0" />
+                  Supports full screen vision — AI can see and interact with anything on your screen.
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -447,55 +490,85 @@ export const Settings: React.FC = () => {
 
         {/* Saved Models List */}
         <div className="space-y-3">
-          {models.map((model) => (
-            <div key={model.id} className="p-4 bg-surface2 border border-border rounded-lg flex items-center justify-between">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
+          {models.map((model) => {
+            const caps = getModelCapabilities(model.provider_type, model.model_name);
+            return (
+            <div key={model.id} className="p-4 bg-surface2 border border-border rounded-lg flex items-start justify-between gap-3">
+              <div className="space-y-2 flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h4 className="font-semibold text-text text-sm">{model.display_name}</h4>
                   <span className="text-xs text-text-muted font-mono bg-surface3 px-1.5 py-0.5 rounded border border-border uppercase">
                     {model.provider_type}
                   </span>
                   {model.is_active && (
                     <span className="px-2 py-0.5 bg-accent-dim/35 text-accent border border-accent/30 rounded text-[9px] font-bold uppercase tracking-wider">
-                      Active Setup
+                      Active
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-text-secondary">
-                  Identifier: <code className="text-accent">{model.model_name}</code>
-                  {model.base_url && ` | Endpoint: ${model.base_url}`}
+                <p className="text-xs text-text-secondary font-mono truncate">
+                  {model.model_name}{model.base_url ? ` · ${model.base_url}` : ""}
                 </p>
-                {/* Roles badges */}
-                <div className="flex gap-1.5 pt-1">
-                  {model.role_vision && (
-                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-success px-1.5 py-0.25 rounded">
-                      Vision
+
+                {/* Capability badges — what this model actually supports */}
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {caps.vision ? (
+                    <span className="flex items-center gap-1 text-[9px] font-bold uppercase bg-success/10 border border-success/20 text-success px-1.5 py-0.5 rounded">
+                      <Eye className="w-2.5 h-2.5" /> Screen Vision
                     </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[9px] font-bold uppercase bg-warning/10 border border-warning/20 text-warning px-1.5 py-0.5 rounded">
+                      <EyeOff className="w-2.5 h-2.5" /> Text Only
+                    </span>
+                  )}
+                  <span className="flex items-center gap-1 text-[9px] font-bold uppercase bg-surface3 border border-border text-text-muted px-1.5 py-0.5 rounded">
+                    <Type className="w-2.5 h-2.5" /> Text
+                  </span>
+                  <span className="flex items-center gap-1 text-[9px] font-bold uppercase bg-surface3 border border-border text-text-muted px-1.5 py-0.5 rounded">
+                    <Code className="w-2.5 h-2.5" /> Coding
+                  </span>
+                  <span className="flex items-center gap-1 text-[9px] font-bold uppercase bg-surface3 border border-border text-text-muted px-1.5 py-0.5 rounded">
+                    <PenLine className="w-2.5 h-2.5" /> Writing
+                  </span>
+
+                  {/* Role assignments */}
+                  {model.role_vision && caps.vision && (
+                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-accent px-1.5 py-0.5 rounded">Primary Vision Role</span>
                   )}
                   {model.role_coding && (
-                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-accent-hover px-1.5 py-0.25 rounded">
-                      Coding
-                    </span>
+                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-accent px-1.5 py-0.5 rounded">Coding Role</span>
                   )}
                   {model.role_writing && (
-                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-warning px-1.5 py-0.25 rounded">
-                      Writing
-                    </span>
+                    <span className="text-[9px] font-bold uppercase bg-surface3 border border-border text-accent px-1.5 py-0.5 rounded">Writing Role</span>
                   )}
                 </div>
+
+                {/* Warning if assigned as vision role but doesn't support vision */}
+                {model.role_vision && !caps.vision && (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <AlertTriangle className="w-3 h-3 text-warning" />
+                    <span className="text-[10px] text-warning font-semibold">
+                      Assigned as Vision model but {model.provider_type} doesn't support images. 
+                      Screen-based automation will work in text-only mode.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <button
                 onClick={() => handleDelete(model.id)}
-                className="p-2 text-text-muted hover:text-error hover:bg-error-dim/20 rounded-md transition-colors"
+                className="p-2 text-text-muted hover:text-error hover:bg-error-dim/20 rounded-md transition-colors shrink-0 mt-0.5"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
-          ))}
+          )})}
 
           {models.length === 0 && !isAdding && (
-            <p className="text-xs text-text-muted text-center py-8">No models configured. Register a model to enable agent capabilities.</p>
+            <div className="text-center py-10 space-y-2">
+              <p className="text-xs text-text-muted">No models configured.</p>
+              <p className="text-xs text-text-secondary">Click "Add Model" to connect an AI provider and enable automation.</p>
+            </div>
           )}
         </div>
       </div>

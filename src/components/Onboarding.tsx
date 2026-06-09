@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useStore } from "../store";
 import { motion, AnimatePresence } from "framer-motion";
-import { Shield, Check, ChevronRight, ChevronLeft, Loader2, Sparkles } from "lucide-react";
+import { Shield, Check, ChevronRight, ChevronLeft, Loader2, Sparkles, Eye, EyeOff } from "lucide-react";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -244,24 +244,66 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
               >
                 <h2 className="text-2xl font-bold text-text">Configure Your Primary AI Model</h2>
                 <p className="text-text-secondary text-sm leading-relaxed">
-                  Connect Omni to your preferred LLM provider. Since keys are saved securely in your Windows Credential Manager, your key never leaves your local system.
+                  Connect Omni to your preferred LLM provider. Keys are saved securely in Windows Credential Manager — they never leave your machine.
                 </p>
 
-                <div className="grid grid-cols-5 gap-2 mb-4">
-                  {["openai", "anthropic", "deepseek", "openrouter", "custom"].map((p) => (
+                {/* Provider capability grid */}
+                <div className="grid grid-cols-5 gap-2 mb-1">
+                  {[
+                    { id: "openai",     label: "OpenAI",     vision: true },
+                    { id: "anthropic",  label: "Anthropic",  vision: true },
+                    { id: "deepseek",   label: "DeepSeek",   vision: false },
+                    { id: "openrouter", label: "OpenRouter",  vision: true },
+                    { id: "custom",     label: "Custom",      vision: false },
+                  ].map((p) => (
                     <button
-                      key={p}
-                      onClick={() => handleProviderChange(p)}
-                      className={`py-2 px-1 text-xs font-semibold rounded-md border text-center capitalize transition-colors ${
-                        provider === p
+                      key={p.id}
+                      onClick={() => handleProviderChange(p.id)}
+                      className={`py-2 px-1 text-xs font-semibold rounded-md border text-center capitalize transition-colors relative ${
+                        provider === p.id
                           ? "bg-accent border-accent text-accent-contrast shadow-sm"
                           : "bg-surface2 border-border text-text-secondary hover:text-text"
                       }`}
                     >
-                      {p}
+                      {p.label}
+                      <span className={`block text-[8px] font-bold mt-0.5 ${
+                        provider === p.id ? "text-accent-contrast/70" :
+                        p.vision ? "text-success" : "text-warning"
+                      }`}>
+                        {p.vision ? "Vision ✓" : "Text only"}
+                      </span>
                     </button>
                   ))}
                 </div>
+
+                {/* Non-vision warning */}
+                {(provider === "deepseek" || provider === "custom") && (
+                  <div className="flex items-start gap-2.5 p-3 bg-warning/10 border border-warning/25 rounded-lg">
+                    <EyeOff className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-xs font-semibold text-warning">
+                        {provider === "deepseek" ? "DeepSeek does not support screen vision" : "Custom endpoint — vision capability unknown"}
+                      </p>
+                      <p className="text-[11px] text-text-secondary mt-0.5">
+                        Omni can still automate tasks, but the AI won't be able to see your screen.
+                        It works from task description alone. For full automation with screen reading,
+                        also add an OpenAI or Anthropic model in Settings after setup.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Vision confirmation */}
+                {(provider === "openai" || provider === "anthropic" || provider === "openrouter") && (
+                  <div className="flex items-center gap-2 p-2.5 bg-success/10 border border-success/20 rounded-lg">
+                    <Eye className="w-4 h-4 text-success shrink-0" />
+                    <p className="text-xs text-success font-semibold">
+                      {provider === "openai" && "Full screen vision — GPT-4o can read and interact with anything on screen."}
+                      {provider === "anthropic" && "Full screen vision — Claude 3+ can read and interact with anything on screen."}
+                      {provider === "openrouter" && "Vision capable (depends on chosen model). Recommended: gemini-2.5-flash or gpt-4o."}
+                    </p>
+                  </div>
+                )}
 
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-3">

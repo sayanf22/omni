@@ -70,6 +70,19 @@ pub async fn run_task(
     let task_type = detect_task_type(&instruction);
     let tools = get_all_tools();
     
+    // Check if the model we'll use supports vision — use it to adjust the system prompt
+    let vision_available = {
+        let role = match task_type {
+            crate::ai::TaskType::Vision   => "vision",
+            crate::ai::TaskType::Coding   => "coding",
+            crate::ai::TaskType::Writing  => "writing",
+        };
+        let model = crate::storage::sqlite::get_active_model_for_role_db(role)
+            .ok().flatten()
+            .or_else(|| crate::storage::sqlite::get_active_model_for_role_db("vision").ok().flatten());
+        model.map_or(false, |m| crate::ai::client::model_supports_vision(&m))
+    };
+
     // Build tools system prompt description
     let mut tools_desc = Vec::new();
     for (name, t) in &tools {
@@ -80,21 +93,30 @@ pub async fn run_task(
         }));
     }
 
+    let screen_context = if vision_available {
+        "You see the current screen in the screenshot provided with each message."
+    } else {
+        "IMPORTANT: Your model does NOT support screen vision. You cannot see screenshots.\n\
+         You must reason purely from the task instruction and tool outcomes.\n\
+         Use the 'screen' tool with action='ocr' to read text from screen, or 'screen' action='ui_tree' for accessibility info."
+    };
+
     let mut system_prompt = format!(
         "You are Omni, an AI agent controlling a Windows computer.\n\
-         You see the current screen in the screenshot provided.\n\n\
+         {}\n\n\
          Available tools:\n{}\n\n\
          Rules:\n\
          - Think step by step. Use minimum steps needed.\n\
-         - After each tool call you will receive a new screenshot.\n\
-         - For DELETE or high-risk actions (like deleting folders or file deletion): you will be prompted for approval.\n\
+         - After each tool call you will receive the outcome.\n\
+         - For DELETE or high-risk actions: output {{\"question\":\"...\"}} to ask user first.\n\
          - Stop at 20 steps maximum.\n\
          - When done: output {{\"done\":true, \"result\":\"brief summary\"}}\n\
-         - Respond ONLY in valid JSON matching one of the schemas below. No markdown formatting. No explanation outside JSON.\n\n\
-         Valid JSON response schemas:\n\
+         - Respond ONLY in valid JSON. No markdown. No explanation outside JSON.\n\n\
+         Valid JSON schemas:\n\
          1) {{\"thought\":\"...\", \"tool\":\"tool_name\", \"params\":{{...}}}}\n\
          2) {{\"done\":true, \"result\":\"...\"}}\n\
          3) {{\"question\":\"...\"}}",
+        screen_context,
         serde_json::to_string_pretty(&tools_desc).unwrap_or_default()
     );
 
