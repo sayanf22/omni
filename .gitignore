@@ -1,0 +1,59 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+
+# Build outputs
+dist
+dist-ssr
+dist-test
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust build artifacts — these are huge and should NOT be in git
+src-tauri/target/
+
+# Compiled sidecar build artifacts (keep the spec file but not the full build output)
+build/mem0-server/localpycs/
+build/mem0-server/*.toc
+build/mem0-server/*.pyz
+build/mem0-server/*.pkg
+build/mem0-server/base_library.zip
+build/mem0-server/xref-mem0-server.html
+build/mem0-server/warn-mem0-server.txt
+
+# Keep the compiled binary that Tauri bundles
+!src-tauri/binaries/
+
+# Tauri gen schemas (auto-generated)
+src-tauri/gen/schemas/
+
+# Cargo lock for workspace crates (keep root Cargo.lock)
+src-tauri/storage_test_crate/target/
+
+# scratch — reference repos and local dev scripts, not part of the main repo
+scratch/
+
+# Env / secrets (never commit)
+.env
+.env.*
+*.pem
+*.key
+secrets.*

@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #09090B;
+  --surface: #18181B;
+  --surface-2: #27272A;
+  --surface-3: #3F3F46;
+  --border: #27272A;
+  --border-light: #3F3F46;
+  --accent: #FFFFFF;
+  --accent-hover: #F4F4F5;
+  --accent-dim: #27272A;
+  --accent-contrast: #09090B;
+  --text: #FAFAFA;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --error-dim: #450A0A;
+}
+
+[data-theme="light"] {
+  --bg: #FAFAFA;
+  --surface: #FFFFFF;
+  --surface-2: #F4F4F5;
+  --surface-3: #E4E4E7;
+  --border: #E4E4E7;
+  --border-light: #D4D4D8;
+  --accent: #09090B;
+  --accent-hover: #18181B;
+  --accent-dim: #F4F4F5;
+  --accent-contrast: #FFFFFF;
+  --text: #09090B;
+  --text-secondary: #52525B;
+  --text-muted: #A1A1AA;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --error-dim: #FEE2E2;
+}
+
+/* Custom rounded corners for modern saas feel */
+kbd {
+  font-family: inherit;
+}
+
+/* Smooth micro-interactions */
+button, select, input, textarea {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button:hover {
+  transform: translateY(-0.5px);
+}
+
+button:active {
+  transform: translateY(0.5px);
+}
+
+/* Subtle glow for accents */
+.accent-glow {
+  box-shadow: 0 0 12px 0 rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .accent-glow {
+  box-shadow: 0 0 12px 0 rgba(0, 0, 0, 0.05);
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}
