@@ -32,7 +32,17 @@ pub async fn run_task(
     // 1. Reset cancellation flag
     get_cancel_flag().store(false, Ordering::SeqCst);
 
-    // 2. Generate task ID
+    // 2. Resolve user_id — if empty, fall back to stored keychain user id
+    let resolved_user_id = if user_id.is_empty() {
+        crate::storage::keychain::get_key("supabase_user_id")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "local-user".to_string())
+    } else {
+        user_id
+    };
+
+    // 3. Generate task ID
     let task_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -89,7 +99,7 @@ pub async fn run_task(
     );
 
     // Retrieve memories from Mem0 if configured
-    if let Some(memories) = crate::ai::memory::fetch_mem0_memories(&instruction, &user_id).await {
+    if let Some(memories) = crate::ai::memory::fetch_mem0_memories(&instruction, &resolved_user_id).await {
         system_prompt.push_str(&format!("\n\n{}", memories));
     }
 
@@ -355,7 +365,7 @@ pub async fn run_task(
 
     // Emit task done & write context to Mem0
     if final_status == "completed" {
-        let _ = crate::ai::memory::add_mem0_memory(&instruction, &final_outcome, &user_id).await;
+        let _ = crate::ai::memory::add_mem0_memory(&instruction, &final_outcome, &resolved_user_id).await;
 
         let _ = app.emit("task:done", serde_json::json!({
             "task_id": task_id.clone(),

@@ -7,6 +7,7 @@ import { Login } from "./components/Login";
 import { Onboarding } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
 import { FloatingOverlay } from "./components/FloatingOverlay";
+import { TextInputOverlay } from "./components/TextInputOverlay";
 
 function App() {
   const { session, setSession, models, fetchLocalData } = useStore();
@@ -45,6 +46,11 @@ function App() {
   // If in the overlay window, load FloatingOverlay directly
   if (windowLabel === "overlay") {
     return <FloatingOverlay />;
+  }
+
+  // If in the text input window, load TextInputOverlay directly
+  if (windowLabel === "textinput") {
+    return <TextInputOverlay />;
   }
 
   // Handle loading state

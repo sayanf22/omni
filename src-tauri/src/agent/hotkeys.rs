@@ -220,10 +220,16 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
         }
 
     } else if text_shortcut.map_or(false, |s| s == shortcut) && state == ShortcutState::Pressed {
-        // ── Text command mode: bring main window to focus ─────────────────────
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.show();
-            let _ = main.set_focus();
+        // ── Text command mode: show the floating text input window ────────────
+        if let Some(text_win) = app.get_webview_window("textinput") {
+            let _ = text_win.show();
+            let _ = text_win.set_focus();
+        } else {
+            // Fallback: bring main window to focus
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.show();
+                let _ = main.set_focus();
+            }
         }
         let _ = app.emit("hotkey:text_mode", serde_json::json!({}));
 
