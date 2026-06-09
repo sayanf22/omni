@@ -39,8 +39,9 @@ build/mem0-server/base_library.zip
 build/mem0-server/xref-mem0-server.html
 build/mem0-server/warn-mem0-server.txt
 
-# Keep the compiled binary that Tauri bundles
-!src-tauri/binaries/
+# Keep the compiled binary that Tauri bundles (gitignore to avoid GitHub LFS warnings)
+# Re-add with: git add -f src-tauri/binaries/
+src-tauri/binaries/*.exe
 
 # Tauri gen schemas (auto-generated)
 src-tauri/gen/schemas/
