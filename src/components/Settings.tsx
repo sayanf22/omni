@@ -33,6 +33,8 @@ export const Settings: React.FC = () => {
 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [probingVision, setProbingVision] = useState(false);
+  const [probedVision, setProbedVision] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
 
   // System integrations keys
@@ -113,6 +115,7 @@ export const Settings: React.FC = () => {
   const handleProviderChange = (p: string) => {
     setProvider(p);
     setTestResult(null);
+    setProbedVision(null);
     if (p === "openai") {
       setDisplayName("OpenAI primary");
       setModelName("gpt-4o-mini");
@@ -149,9 +152,29 @@ export const Settings: React.FC = () => {
     }
     setTesting(true);
     setTestResult(null);
+    setProbedVision(null);
     try {
       const result = await testModel(provider, modelName, baseUrl || null, apiKey);
       setTestResult({ success: true, message: `Successfully connected: "${result}"` });
+
+      // After a successful connection, probe whether the model actually accepts images
+      setProbingVision(true);
+      try {
+        const hasVision = await invoke<boolean>("probe_model_vision", {
+          providerType: provider,
+          modelName,
+          baseUrl: baseUrl || null,
+          apiKey,
+        });
+        setProbedVision(hasVision);
+        // Update the Vision Role toggle to reflect the real capability
+        setRoleVision(hasVision);
+      } catch (ve) {
+        console.warn("Vision probe failed:", ve);
+        setProbedVision(null);
+      } finally {
+        setProbingVision(false);
+      }
     } catch (e: any) {
       setTestResult({ success: false, message: e || "Failed to establish connection." });
     } finally {
@@ -164,12 +187,14 @@ export const Settings: React.FC = () => {
     if (!displayName || !modelName || !apiKey) return;
     setSaving(true);
     try {
+      // Use the real probe result for role_vision if we have one; otherwise fall back to toggle
+      const finalRoleVision = probedVision !== null ? probedVision : roleVision;
       await addCustomModel({
         provider_type: provider,
         model_name: modelName,
         display_name: displayName,
         base_url: baseUrl || null,
-        role_vision: roleVision,
+        role_vision: finalRoleVision,
         role_coding: roleCoding,
         role_writing: roleWriting,
         is_active: isActive,
@@ -179,6 +204,7 @@ export const Settings: React.FC = () => {
       setDisplayName("");
       setApiKey("");
       setTestResult(null);
+      setProbedVision(null);
     } catch (e) {
       console.error(e);
     } finally {
@@ -458,6 +484,22 @@ export const Settings: React.FC = () => {
                   <span className={`text-xs font-semibold flex items-center gap-1 ${testResult.success ? "text-success" : "text-error"}`}>
                     {testResult.success ? <Check className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
                     {testResult.success ? "Connection Verified" : "Failed Verification"}
+                  </span>
+                )}
+                {/* Vision probe result — shown after successful test */}
+                {testResult?.success && (
+                  <span className={`text-xs font-semibold flex items-center gap-1 ${
+                    probingVision ? "text-text-muted" :
+                    probedVision === true ? "text-success" :
+                    probedVision === false ? "text-warning" : ""
+                  }`}>
+                    {probingVision ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Testing vision...</>
+                    ) : probedVision === true ? (
+                      <><Eye className="w-3.5 h-3.5" /> Vision confirmed</>
+                    ) : probedVision === false ? (
+                      <><EyeOff className="w-3.5 h-3.5" /> Text only (no image input)</>
+                    ) : null}
                   </span>
                 )}
               </div>

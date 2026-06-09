@@ -30,6 +30,7 @@ use security::permissions::approve_request;
 use agent::planner::{run_task, cancel_task};
 use agent::sidecar::SidecarState;
 use ai::test_model_connection;
+use ai::client::probe_model_vision;
 use ai::memory::{get_all_memories, delete_memory_item, search_memory_items, add_custom_memory_item};
 use commands::{trigger_mic_start, trigger_mic_stop, trigger_tts_speak};
 use agent::hotkeys::{set_hotkey, get_hotkeys};
@@ -182,6 +183,7 @@ pub fn run() {
             run_task,
             cancel_task,
             test_model_connection,
+            probe_model_vision,
             trigger_mic_start,
             trigger_mic_stop,
             trigger_tts_speak,
@@ -197,7 +199,8 @@ pub fn run() {
             supabase_logout,
             sync_local_to_cloud,
             set_hotkey,
-            get_hotkeys
+            get_hotkeys,
+            probe_model_vision
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

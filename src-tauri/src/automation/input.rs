@@ -1,7 +1,13 @@
-use enigo::{Enigo, Settings, Coordinate, Direction, Button, Key, Keyboard, Mouse, Axis};
+use enigo::{Enigo, Settings, Direction, Key, Keyboard, Mouse, Axis};
 use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, SetClipboardData, EmptyClipboard};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::Foundation::{HWND, HANDLE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, MOUSEINPUT, INPUT_MOUSE,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+};
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 /// Sets the clipboard content to the specified text using the Win32 API.
 pub fn set_clipboard_text(text: &str) -> anyhow::Result<()> {
@@ -72,57 +78,137 @@ fn map_key(key_str: &str) -> Option<Key> {
     }
 }
 
-/// Simulates a left mouse click at (x, y) coordinates.
+/// Convert logical screen coordinates to normalized absolute (0..65535) for SendInput.
+fn to_normalized(x: i32, y: i32) -> anyhow::Result<(i32, i32)> {
+    unsafe {
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        if screen_w == 0 || screen_h == 0 {
+            return Err(anyhow::anyhow!("Could not get screen dimensions"));
+        }
+        let norm_x = (x * 65535) / screen_w + 1;
+        let norm_y = (y * 65535) / screen_h + 1;
+        Ok((norm_x, norm_y))
+    }
+}
+
+/// Simulates a left mouse click at (x, y) using Win32 SendInput — fast, no Enigo overhead.
 pub fn mouse_click_internal(x: i32, y: i32) -> anyhow::Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| anyhow::anyhow!("Failed to init Enigo: {:?}", e))?;
-    enigo.move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| anyhow::anyhow!("Failed to move mouse: {:?}", e))?;
-    enigo.button(Button::Left, Direction::Click)
-        .map_err(|e| anyhow::anyhow!("Failed to click mouse: {:?}", e))?;
+    let (nx, ny) = to_normalized(x, y)?;
+    unsafe {
+        let inputs = [
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+        ];
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != 3 {
+            return Err(anyhow::anyhow!("SendInput failed: sent {} of 3 events", sent));
+        }
+    }
     Ok(())
 }
 
-/// Simulates a right mouse click at (x, y) coordinates.
+/// Simulates a right mouse click at (x, y) using Win32 SendInput.
 pub fn mouse_right_click(x: i32, y: i32) -> anyhow::Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| anyhow::anyhow!("Failed to init Enigo: {:?}", e))?;
-    enigo.move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| anyhow::anyhow!("Failed to move mouse: {:?}", e))?;
-    enigo.button(Button::Right, Direction::Click)
-        .map_err(|e| anyhow::anyhow!("Failed to right click mouse: {:?}", e))?;
+    let (nx, ny) = to_normalized(x, y)?;
+    unsafe {
+        let inputs = [
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+        ];
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != 3 {
+            return Err(anyhow::anyhow!("SendInput right-click failed: sent {} of 3 events", sent));
+        }
+    }
     Ok(())
 }
 
-/// Simulates a double mouse click at (x, y) coordinates.
+/// Simulates a double left mouse click at (x, y) using Win32 SendInput.
 pub fn mouse_double_click(x: i32, y: i32) -> anyhow::Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| anyhow::anyhow!("Failed to init Enigo: {:?}", e))?;
-    enigo.move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| anyhow::anyhow!("Failed to move mouse: {:?}", e))?;
-    enigo.button(Button::Left, Direction::Click)
-        .map_err(|e| anyhow::anyhow!("Failed to click mouse: {:?}", e))?;
-    enigo.button(Button::Left, Direction::Click)
-        .map_err(|e| anyhow::anyhow!("Failed to double click mouse: {:?}", e))?;
+    let (nx, ny) = to_normalized(x, y)?;
+    unsafe {
+        let inputs = [
+            // Move
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            // First click down
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            // First click up
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            // Second click down
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+            // Second click up
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+        ];
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != 5 {
+            return Err(anyhow::anyhow!("SendInput double-click failed: sent {} of 5 events", sent));
+        }
+    }
     Ok(())
 }
 
-/// Moves the mouse to (x, y) coordinates.
+/// Moves the mouse to (x, y) using Win32 SendInput.
 pub fn mouse_move_to(x: i32, y: i32) -> anyhow::Result<()> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| anyhow::anyhow!("Failed to init Enigo: {:?}", e))?;
-    enigo.move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| anyhow::anyhow!("Failed to move mouse: {:?}", e))?;
+    let (nx, ny) = to_normalized(x, y)?;
+    unsafe {
+        let inputs = [
+            INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 { mi: MOUSEINPUT { dx: nx, dy: ny, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, time: 0, dwExtraInfo: 0 } },
+            },
+        ];
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != 1 {
+            return Err(anyhow::anyhow!("SendInput move failed: sent {} of 1 event", sent));
+        }
+    }
     Ok(())
 }
 
-/// Simulates mouse scrolling.
+/// Simulates mouse scrolling (still uses Enigo since scroll isn't trivially replaced with SendInput wheel normalization).
 pub fn mouse_scroll(x: i32, y: i32, dir: &str, amount: i32) -> anyhow::Result<()> {
+    // Move to position first via SendInput
+    mouse_move_to(x, y)?;
+
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| anyhow::anyhow!("Failed to init Enigo: {:?}", e))?;
-    enigo.move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| anyhow::anyhow!("Failed to move mouse: {:?}", e))?;
-    
+
     let axis = match dir.to_lowercase().as_str() {
         "horizontal" | "left" | "right" => Axis::Horizontal,
         _ => Axis::Vertical,
