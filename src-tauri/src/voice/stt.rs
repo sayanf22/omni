@@ -225,28 +225,40 @@ pub async fn stop_mic_recording() -> anyhow::Result<String> {
 
     tracing::info!("Captured {} samples at {}Hz, {} channels", samples.len(), sample_rate, channels);
 
-    // Write WAV file
+    // Convert to 16 kHz mono — required by Whisper, accepted by ElevenLabs & SAPI,
+    // smaller file = faster upload/transcription.
+    let mono16k = downmix_and_resample_16k(&samples, sample_rate, channels);
+
+    // Write WAV file (16 kHz mono)
     let temp_path = std::env::temp_dir().join("omni_input.wav");
-    write_wav_file(&temp_path, &samples, sample_rate, channels)?;
+    write_wav_file(&temp_path, &mono16k, 16_000, 1)?;
 
-    // Transcribe
-    let key_opt = get_key("elevenlabs").ok().flatten()
-        .or_else(|| get_key("elevenlabs_api_key").ok().flatten());
-
-    let result = if let Some(key) = key_opt.filter(|k| !k.is_empty()) {
-        match call_elevenlabs_stt(&temp_path, &key).await {
-            Ok(text) => {
-                tracing::info!("ElevenLabs STT: '{}'", text);
-                text
-            }
-            Err(e) => {
-                tracing::warn!("ElevenLabs STT failed ({}), falling back to SAPI", e);
-                run_offline_sapi_stt(&temp_path).await?
-            }
-        }
+    // ── Transcription priority ──────────────────────────────────────────────
+    //   1. Local Whisper (whisper.cpp) — fully offline, fast, private, accurate.
+    //   2. ElevenLabs Scribe — cloud, most accurate, needs API key + internet.
+    //   3. Windows SAPI — zero-setup offline fallback (lower accuracy).
+    let result = if let Some(text) = try_local_whisper(&temp_path).await {
+        tracing::info!("Local Whisper STT: '{}'", text);
+        text
     } else {
-        tracing::info!("No ElevenLabs key, using Windows SAPI");
-        run_offline_sapi_stt(&temp_path).await?
+        let key_opt = get_key("elevenlabs").ok().flatten()
+            .or_else(|| get_key("elevenlabs_api_key").ok().flatten());
+
+        if let Some(key) = key_opt.filter(|k| !k.is_empty() && !k.contains('•')) {
+            match call_elevenlabs_stt(&temp_path, &key).await {
+                Ok(text) => {
+                    tracing::info!("ElevenLabs STT: '{}'", text);
+                    text
+                }
+                Err(e) => {
+                    tracing::warn!("ElevenLabs STT failed ({}), falling back to SAPI", e);
+                    run_offline_sapi_stt(&temp_path).await?
+                }
+            }
+        } else {
+            tracing::info!("No local Whisper or ElevenLabs key — using Windows SAPI");
+            run_offline_sapi_stt(&temp_path).await?
+        }
     };
 
     // Cleanup
@@ -304,7 +316,7 @@ async fn call_elevenlabs_stt(file_path: &PathBuf, api_key: &str) -> anyhow::Resu
         .mime_str("audio/wav")?;
 
     let form = reqwest::multipart::Form::new()
-        .text("model_id", "scribe_v2")
+        .text("model_id", "scribe_v1")
         .part("file", part);
 
     let response = client
@@ -329,11 +341,167 @@ async fn call_elevenlabs_stt(file_path: &PathBuf, api_key: &str) -> anyhow::Resu
     Ok(transcript.to_string())
 }
 
+// ── Audio: downmix to mono + resample to 16 kHz ───────────────────────────────
+
+/// Converts interleaved multi-channel f32 samples at `rate` Hz into mono 16 kHz.
+/// Whisper requires 16 kHz mono; ElevenLabs/SAPI also accept it.
+fn downmix_and_resample_16k(samples: &[f32], rate: u32, channels: u16) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let ch = channels.max(1) as usize;
+
+    // 1) Downmix to mono by averaging channels.
+    let mono: Vec<f32> = if ch == 1 {
+        samples.to_vec()
+    } else {
+        samples
+            .chunks(ch)
+            .map(|frame| frame.iter().copied().sum::<f32>() / ch as f32)
+            .collect()
+    };
+
+    // 2) Resample to 16 kHz with simple linear interpolation.
+    let target_rate = 16_000u32;
+    if rate == target_rate {
+        return mono;
+    }
+    let ratio = target_rate as f64 / rate as f64;
+    let out_len = ((mono.len() as f64) * ratio).round() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_pos = i as f64 / ratio;
+        let idx = src_pos.floor() as usize;
+        let frac = (src_pos - idx as f64) as f32;
+        let a = mono.get(idx).copied().unwrap_or(0.0);
+        let b = mono.get(idx + 1).copied().unwrap_or(a);
+        out.push(a + (b - a) * frac);
+    }
+    out
+}
+
+// ── Local Whisper (whisper.cpp) — fully offline STT ───────────────────────────
+
+/// Directory where the local Whisper engine + model live: %APPDATA%\Omni\whisper\
+fn whisper_dir() -> PathBuf {
+    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    p.push("Omni");
+    p.push("whisper");
+    p
+}
+
+/// Locate the whisper.cpp CLI binary if the user installed one.
+/// Accepts common names: whisper-cli.exe (current), main.exe (older builds).
+fn find_whisper_binary() -> Option<PathBuf> {
+    let dir = whisper_dir();
+    for name in ["whisper-cli.exe", "main.exe", "whisper.exe"] {
+        let p = dir.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Locate the GGML model file (any ggml-*.bin in the whisper dir).
+fn find_whisper_model() -> Option<PathBuf> {
+    let dir = whisper_dir();
+    // Prefer an explicit, fast English model if present.
+    for preferred in ["ggml-base.en.bin", "ggml-small.en.bin", "ggml-tiny.en.bin", "ggml-base.bin"] {
+        let p = dir.join(preferred);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Otherwise take the first ggml-*.bin we find.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().map_or(false, |x| x == "bin") {
+                let n = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                if n.starts_with("ggml-") {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns true if a usable local Whisper engine (binary + model) is installed.
+pub fn local_whisper_available() -> bool {
+    find_whisper_binary().is_some() && find_whisper_model().is_some()
+}
+
+/// Transcribe a 16 kHz mono WAV with the local whisper.cpp CLI.
+/// Returns None if Whisper isn't installed or transcription failed (so callers
+/// can fall back to cloud/SAPI).
+async fn try_local_whisper(wav_path: &PathBuf) -> Option<String> {
+    let bin = find_whisper_binary()?;
+    let model = find_whisper_model()?;
+
+    tracing::info!("Using local Whisper: {:?} with model {:?}", bin, model);
+
+    // -nt = no timestamps, -np = no progress prints, output transcription to stdout.
+    let output = tokio::process::Command::new(&bin)
+        .args([
+            "-m", &model.to_string_lossy(),
+            "-f", &wav_path.to_string_lossy(),
+            "-nt", "-np",
+            "-l", "en",
+            "-t", "4", // threads
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        tracing::warn!("Local Whisper exited with error: {}", String::from_utf8_lossy(&output.stderr));
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('[') && !l.starts_with("whisper_"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// Tauri command — report which STT engine is active so the UI can inform the user.
+#[tauri::command]
+pub fn get_stt_status() -> serde_json::Value {
+    let local = local_whisper_available();
+    let has_elevenlabs = crate::storage::keychain::get_key("elevenlabs")
+        .ok().flatten()
+        .map(|k| !k.is_empty() && !k.contains('•'))
+        .unwrap_or(false);
+
+    let engine = if local {
+        "local_whisper"
+    } else if has_elevenlabs {
+        "elevenlabs"
+    } else {
+        "windows_sapi"
+    };
+
+    serde_json::json!({
+        "engine": engine,
+        "local_whisper_available": local,
+        "elevenlabs_configured": has_elevenlabs,
+        "whisper_dir": whisper_dir().to_string_lossy(),
+    })
+}
+
+
 // ── Windows SAPI offline fallback ─────────────────────────────────────────────
 
 async fn run_offline_sapi_stt(wav_path: &PathBuf) -> anyhow::Result<String> {
     let path_str = wav_path.to_string_lossy().to_string();
-    // Escape backslashes for PowerShell
     let ps_path = path_str.replace('\'', "''");
 
     let script = format!(
