@@ -322,8 +322,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
          TYPE INTO FORM FIELD:\n\
            click the field first -> keyboard type\n\
          \n\
-         OPEN DESKTOP APP:\n\
-           app open name=notepad  (or word, excel, vlc, explorer, cmd, etc.)\n\
+         OPEN DESKTOP APP (any app, including Windows Store apps):\n\
+           app open name=notepad    <- regular exe apps\n\
+           app open name=whatsapp   <- Windows Store / UWP apps work too!\n\
+           app open name=spotify    (also: telegram, discord, netflix, teams, slack, zoom, vlc, etc.)\n\
+           The launcher auto-discovers any installed app — Store apps, .exe apps, and PATH commands.\n\
+           Just use the common everyday name. No need to know the exact exe path or package ID.\n\
          \n\
          == WORKED EXAMPLES ==\n\
          TASK: 'open notepad and write Hello World'\n\
