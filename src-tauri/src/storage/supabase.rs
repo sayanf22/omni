@@ -249,80 +249,90 @@ pub async fn sync_model_to_supabase(model: &CustomModel, delete: bool) -> Result
 pub async fn sync_local_to_cloud() -> Result<(), String> {
     let token = match get_user_token() {
         Some(t) => t,
-        None => return Err("Not logged in to cloud sync.".to_string()),
+        None => return Ok(()), // not logged in — silently skip, no spam
     };
     let user_id = match get_key("supabase_user_id").ok().flatten() {
         Some(uid) => uid,
-        None => return Err("Missing user ID.".to_string()),
+        None => return Ok(()),
     };
 
     let client = reqwest::Client::new();
 
-    // 1. Sync local tasks to Supabase
+    // Helper: detect an expired/invalid session from a Supabase response body/status.
+    fn is_auth_expired(status: u16, body: &str) -> bool {
+        status == 401
+            || body.contains("PGRST303")
+            || body.contains("JWT expired")
+            || body.contains("JWSError")
+    }
+
+    // 1. Sync local tasks
     let unsynced_tasks = get_unsynced_tasks().map_err(|e| e.to_string())?;
     for t in unsynced_tasks {
         let url = format!("{}/rest/v1/tasks", SUPABASE_URL);
-        
-        // Parse steps_json safely to inject as structured json into Postgres
-        let steps_parsed: serde_json::Value = serde_json::from_str(&t.steps_json)
-            .unwrap_or(json!([]));
-
+        let steps_parsed: serde_json::Value = serde_json::from_str(&t.steps_json).unwrap_or(json!([]));
         let payload = json!({
-            "id": t.id,
-            "user_id": user_id,
-            "description": t.description,
-            "status": t.status,
-            "steps_json": steps_parsed,
-            "outcome": t.outcome,
+            "id": t.id, "user_id": user_id, "description": t.description,
+            "status": t.status, "steps_json": steps_parsed, "outcome": t.outcome,
             "created_at": t.created_at
         });
 
-        let response = client.post(&url)
+        let response = match client.post(&url)
             .header("apikey", SUPABASE_ANON_KEY)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
             .header("Prefer", "resolution=merge-duplicates")
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("Failed task sync request: {}", e))?;
+            .json(&payload).send().await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(()), // network down — skip quietly, retry next cycle
+        };
 
+        let status = response.status().as_u16();
         if response.status().is_success() {
             let _ = mark_synced(&t.id);
         } else {
-            let err_text = response.text().await.unwrap_or_default();
-            eprintln!("Failed to sync task {}: {}", t.id, err_text);
+            let body = response.text().await.unwrap_or_default();
+            if is_auth_expired(status, &body) {
+                // Session expired — clear stale token and stop. Avoids log spam.
+                // The user will be prompted to log in again; sync resumes after that.
+                let _ = delete_key("supabase_user_token");
+                tracing::warn!("Cloud sync paused: session expired. Please sign in again.");
+                return Err("SESSION_EXPIRED".to_string());
+            }
+            tracing::warn!("Task {} sync failed ({})", t.id, status);
         }
     }
 
-    // 2. Sync local audits to Supabase
+    // 2. Sync local audits
     let unsynced_audits = get_unsynced_audit_entries().map_err(|e| e.to_string())?;
     for a in unsynced_audits {
         let url = format!("{}/rest/v1/audit_log", SUPABASE_URL);
         let payload = json!({
-            "id": a.id,
-            "user_id": user_id,
-            "action_type": a.action_type,
-            "tool_name": a.tool_name,
-            "app_name": a.app_name,
-            "outcome": a.outcome,
+            "id": a.id, "user_id": user_id, "action_type": a.action_type,
+            "tool_name": a.tool_name, "app_name": a.app_name, "outcome": a.outcome,
             "created_at": a.created_at
         });
 
-        let response = client.post(&url)
+        let response = match client.post(&url)
             .header("apikey", SUPABASE_ANON_KEY)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("Failed audit sync request: {}", e))?;
+            .json(&payload).send().await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
 
+        let status = response.status().as_u16();
         if response.status().is_success() {
             let _ = mark_audit_synced(&a.id);
         } else {
-            let err_text = response.text().await.unwrap_or_default();
-            eprintln!("Failed to sync audit log {}: {}", a.id, err_text);
+            let body = response.text().await.unwrap_or_default();
+            if is_auth_expired(status, &body) {
+                let _ = delete_key("supabase_user_token");
+                return Err("SESSION_EXPIRED".to_string());
+            }
         }
     }
 

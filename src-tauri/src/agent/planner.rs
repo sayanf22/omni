@@ -146,13 +146,26 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
          {}\n\n\
          Available tools:\n{}\n\n\
          RULES:\n\
-         - Think step by step. Use minimum steps.\n\
+         - Think step by step. Use the minimum number of steps.\n\
          - You control a real Windows PC — mouse, keyboard, apps, files.\n\
-         - ALWAYS use tools to accomplish tasks. Never just describe what to do.\n\
-         - For file deletion or sending emails/posts: output {{\"question\":\"...\"}} to ask user first.\n\
+         - ALWAYS use tools to actually perform actions. Never just describe what to do.\n\
+         - For file deletion or sending emails/posts: output {{\"question\":\"...\"}} to ask the user first.\n\
          - Stop at 20 steps maximum.\n\
-         - When done: output {{\"done\":true, \"result\":\"brief summary\"}}\n\
-         - Respond ONLY in valid JSON. No markdown. No explanation outside JSON.\n\n\
+         - When finished: output {{\"done\":true, \"result\":\"brief summary\"}}.\n\
+         - Respond ONLY in valid JSON. No markdown. No text outside the JSON.\n\n\
+         HOW TO TYPE TEXT INTO AN APP (very important):\n\
+         1. Open the app with the 'app' tool (action 'open'). It auto-waits for the window\n\
+            to be ready and focuses it. The text caret is then active in editors like Notepad.\n\
+         2. Immediately use the 'keyboard' tool with action 'type' and the 'text' you want.\n\
+            The text goes to whatever window is focused — no need to click first for Notepad/Word.\n\
+         3. If a specific field must be focused first (browser address bar, a form box),\n\
+            use 'keyboard' hotkeys (e.g. Ctrl+L for browser address bar) or click the field,\n\
+            then 'keyboard' type.\n\
+         4. To save: 'keyboard' hotkey [\"ctrl\",\"s\"].\n\n\
+         WORKED EXAMPLE — task: \"open notepad and write Hello World\":\n\
+         Step 1 -> {{\"thought\":\"Open Notepad\",\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"notepad\"}}}}\n\
+         Step 2 -> {{\"thought\":\"Notepad is focused, type the text\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Hello World\"}}}}\n\
+         Step 3 -> {{\"done\":true,\"result\":\"Wrote 'Hello World' in Notepad\"}}\n\n\
          Valid JSON response formats:\n\
          1) {{\"thought\":\"why you're doing this\", \"tool\":\"tool_name\", \"params\":{{...}}}}\n\
          2) {{\"done\":true, \"result\":\"what was accomplished\"}}\n\

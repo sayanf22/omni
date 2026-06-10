@@ -36,16 +36,17 @@
       {
         "label": "textinput",
         "title": "Omni Quick Command",
-        "width": 580,
-        "height": 120,
+        "width": 640,
+        "height": 104,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true,
-        "center": true
+        "center": true,
+        "shadow": false
       }
     ],
     "security": {

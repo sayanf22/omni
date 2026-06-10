@@ -140,13 +140,18 @@ export const useStore = create<AppState>((set, get) => ({
   syncLocalToCloud: async () => {
     const session = get().session;
     if (!session) return;
-
     try {
-      // Run the secure backend database sync engine
       await invoke("sync_local_to_cloud");
       await get().fetchLocalData();
-    } catch (e) {
-      console.error("Sync process failed", e);
+    } catch (e: any) {
+      // Session expired — clear it so the app routes back to Login.
+      // The backend already cleared the stale token from the keychain.
+      if (typeof e === "string" && e.includes("SESSION_EXPIRED")) {
+        console.warn("Cloud session expired — signing out for re-login.");
+        set({ session: null });
+      } else {
+        console.error("Sync process failed", e);
+      }
     }
   }
 }));

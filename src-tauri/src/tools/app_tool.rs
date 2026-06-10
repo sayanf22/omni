@@ -48,12 +48,26 @@ impl Tool for AppTool {
             "open" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for open action"))?;
                 let pid = launch_app_internal(name)?;
-                Ok(format!("Started application '{}' with PID {}", name, pid))
+                // Wait for the app window to be created and ready to receive input.
+                // Without this, immediate keyboard input is lost because the window
+                // isn't focused / the message loop isn't pumping yet.
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                // Best-effort: bring the just-launched window to the foreground so the
+                // text caret is active and keyboard input lands in it.
+                let _ = focus_window_by_name(name);
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(format!(
+                    "Opened '{}' (PID {}). The window is now focused and ready. \
+                     For a text editor like Notepad, the cursor is already in the text area — \
+                     use the keyboard tool with action 'type' to write text now.",
+                    name, pid
+                ))
             }
             "focus" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for focus action"))?;
                 focus_window_by_name(name)?;
-                Ok(format!("Focused window matching '{}'", name))
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                Ok(format!("Focused window matching '{}'. It is now the active window — keyboard input will go here.", name))
             }
             "list" => {
                 let apps = list_running_apps_internal();

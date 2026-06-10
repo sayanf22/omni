@@ -1,7 +1,7 @@
 /**
- * TextInputOverlay — floating quick-command window
+ * TextInputOverlay — floating quick-command bar (Spotlight / Raycast style)
  *
- * Triggered by Ctrl+Shift+T. A centered, fully opaque pill-style input.
+ * Triggered by Ctrl+Shift+T. A single clean rounded pill on a transparent window.
  * Type a command → Enter to run, Esc to close.
  */
 import React, { useState, useEffect, useRef } from "react";
@@ -16,9 +16,12 @@ export const TextInputOverlay: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Apply dark theme immediately so CSS vars work in this isolated window
+  // Make the window background fully transparent so only the rounded card shows
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", "dark");
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+    document.body.style.margin = "0";
+    document.body.style.overflow = "hidden";
   }, []);
 
   const hide = async () => {
@@ -29,47 +32,27 @@ export const TextInputOverlay: React.FC = () => {
   };
 
   const handleStop = async () => {
-    try {
-      await invoke("cancel_task");
-    } catch (_) {}
+    try { await invoke("cancel_task"); } catch (_) {}
     setRunning(false);
     await hide();
   };
 
   useEffect(() => {
-    // Auto-focus when shown
     setTimeout(() => inputRef.current?.focus(), 80);
-
     const cleanups: Array<() => void> = [];
 
-    async function setup() {
-      cleanups.push(
-        await listen("hotkey:text_mode", () => {
-          setValue("");
-          setError(null);
-          setRunning(false);
-          setTimeout(() => inputRef.current?.focus(), 50);
-        })
-      );
-      cleanups.push(
-        await listen("task:done", async () => {
-          await hide();
-        })
-      );
-      cleanups.push(
-        await listen<any>("task:failed", async (e) => {
-          setError(e.payload?.error || "Task failed");
-          setRunning(false);
-        })
-      );
-      cleanups.push(
-        await listen("agent:killed", async () => {
-          await hide();
-        })
-      );
-    }
+    (async () => {
+      cleanups.push(await listen("hotkey:text_mode", () => {
+        setValue(""); setError(null); setRunning(false);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }));
+      cleanups.push(await listen("task:done", async () => { await hide(); }));
+      cleanups.push(await listen<any>("task:failed", async (e) => {
+        setError(e.payload?.error || "Task failed"); setRunning(false);
+      }));
+      cleanups.push(await listen("agent:killed", async () => { await hide(); }));
+    })();
 
-    setup();
     return () => cleanups.forEach((fn) => fn());
   }, []);
 
@@ -81,7 +64,6 @@ export const TextInputOverlay: React.FC = () => {
     setError(null);
     try {
       invoke("run_task", { instruction, userId: "" });
-      // Don't await — fire and forget; task:done/failed will close window
     } catch (err: any) {
       setError(err?.toString() || "Failed to start task");
       setRunning(false);
@@ -91,161 +73,149 @@ export const TextInputOverlay: React.FC = () => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.preventDefault();
-      if (running) {
-        handleStop();
-      } else {
-        hide();
-      }
+      running ? handleStop() : hide();
     }
   };
 
+  // Border colour reflects state
+  const borderColor = error ? "#7f1d1d" : running ? "#3f3f46" : "#3f3f46";
+
   return (
-    // Full-window wrapper — dark, fully opaque, no transparency
     <div
-      className="w-screen h-screen flex items-center justify-center p-3"
-      style={{ background: "#0a0a0f" }}
+      style={{
+        width: "100vw",
+        height: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        padding: "8px",
+        boxSizing: "border-box",
+      }}
     >
-      <div
-        className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl"
-        style={{ border: "1px solid #27272A" }}
+      <form
+        onSubmit={handleSubmit}
         onKeyDown={handleKeyDown}
+        style={{
+          width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          background: "#161618",
+          border: `1px solid ${borderColor}`,
+          borderRadius: "16px",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+          overflow: "hidden",
+        }}
       >
-        {/* Header bar */}
-        <div
-          className="flex items-center justify-between px-4 py-2.5"
-          style={{ background: "#18181B", borderBottom: "1px solid #27272A" }}
-        >
-          <div className="flex items-center gap-2">
-            <div
-              className="w-5 h-5 rounded-full flex items-center justify-center"
-              style={{ background: "#ffffff" }}
-            >
-              <span style={{ color: "#09090B", fontSize: "9px", fontWeight: 900 }}>Ω</span>
-            </div>
-            <span style={{ color: "#fafafa", fontSize: "13px", fontWeight: 600 }}>
-              {running ? "Running task…" : "Quick Command"}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={running ? handleStop : hide}
+        {/* Main input row */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 16px" }}>
+          {/* Omni logo */}
+          <div
             style={{
-              color: "#71717A",
-              padding: "4px",
-              borderRadius: "6px",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
+              width: "26px", height: "26px", borderRadius: "8px",
+              background: running ? "#6366F1" : "#ffffff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0,
             }}
-            title={running ? "Stop task (Esc)" : "Close (Esc)"}
           >
             {running
-              ? <Square style={{ width: 14, height: 14, fill: "#EF4444", color: "#EF4444" }} />
-              : <X style={{ width: 14, height: 14 }} />
+              ? <Loader2 style={{ width: 14, height: 14, color: "#fff", animation: "omspin 0.9s linear infinite" }} />
+              : <span style={{ color: "#09090B", fontSize: "12px", fontWeight: 900 }}>Ω</span>
             }
-          </button>
-        </div>
+          </div>
 
-        {/* Input area */}
-        <div style={{ background: "#09090B", padding: "12px 16px" }}>
-          <form onSubmit={handleSubmit} className="flex items-center gap-3">
-            <input
-              ref={inputRef}
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={
-                running
-                  ? "Task is running…"
-                  : error
-                  ? error
-                  : "Type a command and press Enter… (Esc to close)"
-              }
-              disabled={running}
-              autoComplete="off"
-              spellCheck={false}
+          {/* Input */}
+          <input
+            ref={inputRef}
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={running ? "Working on your task…" : "Type a command, e.g. open Notepad and write Hello"}
+            disabled={running}
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              color: "#fafafa",
+              fontSize: "15px",
+              fontWeight: 500,
+            }}
+          />
+
+          {/* Action button */}
+          {running ? (
+            <button
+              type="button"
+              onClick={handleStop}
               style={{
-                flex: 1,
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                color: error && !running ? "#EF4444" : "#fafafa",
-                fontSize: "14px",
-                fontWeight: 500,
-                opacity: running ? 0.5 : 1,
+                display: "flex", alignItems: "center", gap: "5px",
+                padding: "6px 12px", background: "#EF4444", border: "none",
+                borderRadius: "9px", color: "#fff", fontSize: "12px", fontWeight: 700,
+                cursor: "pointer", flexShrink: 0,
               }}
-            />
-            {running ? (
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <Loader2 style={{ width: 16, height: 16, color: "#ffffff", animation: "spin 1s linear infinite" }} />
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  style={{
-                    padding: "4px 10px",
-                    background: "#EF4444",
-                    border: "none",
-                    borderRadius: "8px",
-                    color: "#fff",
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Stop
-                </button>
-              </div>
-            ) : value ? (
-              <button
-                type="submit"
-                style={{
-                  padding: "5px 7px",
-                  background: "#ffffff",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-                title="Run (Enter)"
-              >
-                <Send style={{ width: 13, height: 13, color: "#09090B" }} />
-              </button>
-            ) : (
-              <span style={{ color: "#52525B", fontSize: "11px", whiteSpace: "nowrap" }}>
-                Enter ↵
-              </span>
-            )}
-          </form>
-        </div>
-
-        {/* Hint bar */}
-        <div
-          style={{
-            background: "#18181B",
-            padding: "6px 16px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ color: "#52525B", fontSize: "10px" }}>
-            {running ? "Executing on your PC…" : "Ctrl+Shift+A for voice • Esc to dismiss"}
-          </span>
-          {error && !running && (
-            <span style={{ color: "#EF4444", fontSize: "10px", fontWeight: 600 }}>
-              {error.length > 60 ? error.slice(0, 57) + "…" : error}
-            </span>
+              title="Stop task (Esc)"
+            >
+              <Square style={{ width: 11, height: 11, fill: "#fff" }} /> Stop
+            </button>
+          ) : value ? (
+            <button
+              type="submit"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                padding: "7px", background: "#ffffff", border: "none",
+                borderRadius: "9px", cursor: "pointer", flexShrink: 0,
+              }}
+              title="Run (Enter)"
+            >
+              <Send style={{ width: 15, height: 15, color: "#09090B" }} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={hide}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                padding: "6px", background: "transparent", border: "none",
+                color: "#71717A", cursor: "pointer", flexShrink: 0, borderRadius: "8px",
+              }}
+              title="Close (Esc)"
+            >
+              <X style={{ width: 18, height: 18 }} />
+            </button>
           )}
         </div>
-      </div>
 
-      {/* Add spin keyframe */}
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
+        {/* Slim footer hint / error — always inside the rounded card */}
+        <div
+          style={{
+            padding: "7px 16px",
+            background: "#0e0e10",
+            borderTop: "1px solid #232327",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "10px",
+          }}
+        >
+          <span style={{ color: error ? "#f87171" : "#52525B", fontSize: "11px", fontWeight: error ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {error
+              ? error
+              : running
+              ? "Executing on your PC — press Esc or Stop to cancel"
+              : "Enter to run  •  Esc to close  •  Ctrl+Shift+A for voice"}
+          </span>
+          <span style={{ color: "#3f3f46", fontSize: "10px", fontWeight: 700, flexShrink: 0, fontFamily: "monospace" }}>
+            OMNI
+          </span>
+        </div>
+      </form>
+
+      <style>{`@keyframes omspin { to { transform: rotate(360deg); } }
+        input::placeholder { color: #52525B; }`}</style>
     </div>
   );
 };
