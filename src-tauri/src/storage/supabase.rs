@@ -59,10 +59,17 @@ pub async fn supabase_login(email: String, password: String) -> Result<SupabaseU
 
     let access_token = session.access_token.ok_or_else(|| "No access token in login response".to_string())?;
 
-    // Store token in Windows Credential Manager securely (DPAPI keychain wrapper)
+    // Store access token in Windows Credential Manager (DPAPI)
     store_key("supabase_user_token", &access_token)
         .map_err(|e| format!("Failed to store auth token: {}", e))?;
-    
+
+    // Store the refresh token — this is what keeps the user logged in for months.
+    // Access tokens expire in ~1h; the refresh token is exchanged for new ones.
+    if let Some(ref rt) = session.refresh_token {
+        store_key("supabase_refresh_token", rt)
+            .map_err(|e| format!("Failed to store refresh token: {}", e))?;
+    }
+
     // Store user ID for sync reference
     store_key("supabase_user_id", &session.user.id)
         .map_err(|e| format!("Failed to store user ID: {}", e))?;
@@ -104,7 +111,9 @@ pub async fn supabase_signup(email: String, password: String) -> Result<Supabase
             store_key("supabase_user_token", access_token)
                 .map_err(|e| format!("Failed to store auth token: {}", e))?;
         }
-        
+        if let Some(ref rt) = session.refresh_token {
+            let _ = store_key("supabase_refresh_token", rt);
+        }
         store_key("supabase_user_id", &session.user.id)
             .map_err(|e| format!("Failed to store user ID: {}", e))?;
 
@@ -151,36 +160,92 @@ pub async fn supabase_login_with_otp(email: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Retrieves the current Supabase session info if logged in (by checking keychain) or in persistent offline mode.
-#[tauri::command]
-pub async fn get_supabase_session() -> Result<Option<SupabaseUser>, String> {
-    let token = get_user_token();
-    let user_id = get_key("supabase_user_id").ok().flatten();
+/// Exchange the stored refresh token for a fresh access + refresh token pair.
+/// This is the mechanism that keeps users logged in for months without re-entering
+/// credentials. Access tokens expire ~1h; refresh tokens are long-lived.
+/// Returns the new access token on success.
+pub async fn refresh_session_internal() -> Result<String, String> {
+    let refresh_token = get_key("supabase_refresh_token").ok().flatten()
+        .ok_or_else(|| "No refresh token stored".to_string())?;
 
-    if let (Some(_), Some(uid)) = (token, user_id) {
-        // Return active session info
-        Ok(Some(SupabaseUser {
-            id: uid,
-            email: None, // We don't cache email, but UID is enough for the store
-        }))
-    } else {
-        // Fallback to persistent offline mode if set by the user
-        if let Ok(Some(val)) = get_setting_internal("offline_mode") {
-            if val == "true" {
-                return Ok(Some(SupabaseUser {
-                    id: "local-user".to_string(),
-                    email: Some("local@localhost".to_string()),
-                }));
-            }
-        }
-        Ok(None)
+    let client = reqwest::Client::new();
+    let url = format!("{}/auth/v1/token?grant_type=refresh_token", SUPABASE_URL);
+    let payload = json!({ "refresh_token": refresh_token });
+
+    let response = client.post(&url)
+        .header("apikey", SUPABASE_ANON_KEY)
+        .header("Authorization", format!("Bearer {}", SUPABASE_ANON_KEY))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Network error during refresh: {}", e))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Refresh failed: {}", body));
     }
+
+    let session: SupabaseSession = response.json().await
+        .map_err(|e| format!("Failed to parse refresh response: {}", e))?;
+
+    let access = session.access_token
+        .ok_or_else(|| "No access token in refresh response".to_string())?;
+
+    let _ = store_key("supabase_user_token", &access);
+    // Refresh tokens are single-use — Supabase returns a NEW one each time. Store it.
+    if let Some(rt) = session.refresh_token {
+        let _ = store_key("supabase_refresh_token", &rt);
+    }
+    let _ = store_key("supabase_user_id", &session.user.id);
+
+    Ok(access)
 }
 
-/// Logs out by clearing keys from the secure keychain and resetting offline mode.
+/// Tauri command — manually trigger a session refresh. Returns true if successful.
+#[tauri::command]
+pub async fn refresh_session() -> Result<bool, String> {
+    Ok(refresh_session_internal().await.is_ok())
+}
+
+/// Retrieves the current Supabase session. On startup this proactively refreshes
+/// the access token (best-effort) so the user stays logged in across days/weeks.
+#[tauri::command]
+pub async fn get_supabase_session() -> Result<Option<SupabaseUser>, String> {
+    let user_id = get_key("supabase_user_id").ok().flatten();
+    let has_refresh = get_key("supabase_refresh_token").ok().flatten().is_some();
+
+    if let Some(uid) = user_id {
+        // If we have a refresh token, refresh the access token now so it's valid.
+        // Best-effort: if the device is offline, we still keep the user "logged in"
+        // and let the background sync refresh later when connectivity returns.
+        if has_refresh {
+            let _ = refresh_session_internal().await;
+        }
+
+        // The user is considered logged in if we have any token (access or refresh).
+        if get_user_token().is_some() || has_refresh {
+            return Ok(Some(SupabaseUser { id: uid, email: None }));
+        }
+    }
+
+    // Persistent offline mode fallback
+    if let Ok(Some(val)) = get_setting_internal("offline_mode") {
+        if val == "true" {
+            return Ok(Some(SupabaseUser {
+                id: "local-user".to_string(),
+                email: Some("local@localhost".to_string()),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// Logs out by clearing all auth keys from the secure keychain.
 #[tauri::command]
 pub async fn supabase_logout() -> Result<(), String> {
     let _ = delete_key("supabase_user_token");
+    let _ = delete_key("supabase_refresh_token");
     let _ = delete_key("supabase_user_id");
     let _ = crate::storage::sqlite::set_setting("offline_mode", "false");
     Ok(())
@@ -247,9 +312,16 @@ pub async fn sync_model_to_supabase(model: &CustomModel, delete: bool) -> Result
 /// Backend implementation of the SQLite -> Supabase Cloud database Sync Engine.
 #[tauri::command]
 pub async fn sync_local_to_cloud() -> Result<(), String> {
-    let token = match get_user_token() {
+    // Ensure we have a usable access token; refresh if needed.
+    let mut token = match get_user_token() {
         Some(t) => t,
-        None => return Ok(()), // not logged in — silently skip, no spam
+        None => {
+            // No access token — try to refresh from the stored refresh token.
+            match refresh_session_internal().await {
+                Ok(t) => t,
+                Err(_) => return Ok(()), // not logged in / can't refresh — skip silently
+            }
+        }
     };
     let user_id = match get_key("supabase_user_id").ok().flatten() {
         Some(uid) => uid,
@@ -258,12 +330,8 @@ pub async fn sync_local_to_cloud() -> Result<(), String> {
 
     let client = reqwest::Client::new();
 
-    // Helper: detect an expired/invalid session from a Supabase response body/status.
     fn is_auth_expired(status: u16, body: &str) -> bool {
-        status == 401
-            || body.contains("PGRST303")
-            || body.contains("JWT expired")
-            || body.contains("JWSError")
+        status == 401 || body.contains("PGRST303") || body.contains("JWT expired") || body.contains("JWSError")
     }
 
     // 1. Sync local tasks
@@ -277,7 +345,7 @@ pub async fn sync_local_to_cloud() -> Result<(), String> {
             "created_at": t.created_at
         });
 
-        let response = match client.post(&url)
+        let mut response = match client.post(&url)
             .header("apikey", SUPABASE_ANON_KEY)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
@@ -285,22 +353,45 @@ pub async fn sync_local_to_cloud() -> Result<(), String> {
             .json(&payload).send().await
         {
             Ok(r) => r,
-            Err(_) => return Ok(()), // network down — skip quietly, retry next cycle
+            Err(_) => return Ok(()),
         };
 
-        let status = response.status().as_u16();
+        // If the token expired mid-sync, refresh once and retry this row.
+        if is_auth_expired(response.status().as_u16(), "") {
+            if let Ok(new_token) = refresh_session_internal().await {
+                token = new_token;
+                response = match client.post(&url)
+                    .header("apikey", SUPABASE_ANON_KEY)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .header("Prefer", "resolution=merge-duplicates")
+                    .json(&payload).send().await
+                {
+                    Ok(r) => r,
+                    Err(_) => return Ok(()),
+                };
+            } else {
+                // Refresh failed — session truly expired. Clear and signal re-login.
+                let _ = delete_key("supabase_user_token");
+                let _ = delete_key("supabase_refresh_token");
+                return Err("SESSION_EXPIRED".to_string());
+            }
+        }
+
         if response.status().is_success() {
             let _ = mark_synced(&t.id);
         } else {
+            let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
             if is_auth_expired(status, &body) {
-                // Session expired — clear stale token and stop. Avoids log spam.
-                // The user will be prompted to log in again; sync resumes after that.
-                let _ = delete_key("supabase_user_token");
-                tracing::warn!("Cloud sync paused: session expired. Please sign in again.");
-                return Err("SESSION_EXPIRED".to_string());
+                if refresh_session_internal().await.is_err() {
+                    let _ = delete_key("supabase_user_token");
+                    let _ = delete_key("supabase_refresh_token");
+                    return Err("SESSION_EXPIRED".to_string());
+                }
+            } else {
+                tracing::warn!("Task {} sync failed ({})", t.id, status);
             }
-            tracing::warn!("Task {} sync failed ({})", t.id, status);
         }
     }
 
@@ -324,13 +415,12 @@ pub async fn sync_local_to_cloud() -> Result<(), String> {
             Err(_) => return Ok(()),
         };
 
-        let status = response.status().as_u16();
         if response.status().is_success() {
             let _ = mark_audit_synced(&a.id);
-        } else {
-            let body = response.text().await.unwrap_or_default();
-            if is_auth_expired(status, &body) {
+        } else if is_auth_expired(response.status().as_u16(), &response.text().await.unwrap_or_default()) {
+            if refresh_session_internal().await.is_err() {
                 let _ = delete_key("supabase_user_token");
+                let _ = delete_key("supabase_refresh_token");
                 return Err("SESSION_EXPIRED".to_string());
             }
         }

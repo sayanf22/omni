@@ -82,12 +82,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSession: (session) => {
     set({ session });
-    if (session) {
-      // Store user token in keychain
-      invoke("save_api_key", { name: "supabase_user_token", value: session.access_token }).catch(console.error);
-    } else {
-      invoke("delete_api_key", { name: "supabase_user_token" }).catch(console.error);
-    }
+    // NOTE: Token storage is owned entirely by the Rust backend (supabase_login /
+    // refresh_session store access + refresh tokens in Credential Manager).
+    // The frontend must NOT write tokens here — doing so previously overwrote the
+    // real tokens with `undefined`. Logout is handled via the supabase_logout command.
   },
 
   fetchLocalData: async () => {

@@ -23,7 +23,7 @@ use storage::sqlite::{
     force_cancel_task, cleanup_orphaned_tasks
 };
 use storage::supabase::{
-    supabase_login, supabase_signup, supabase_login_with_otp, get_supabase_session, supabase_logout, sync_local_to_cloud
+    supabase_login, supabase_signup, supabase_login_with_otp, get_supabase_session, supabase_logout, sync_local_to_cloud, refresh_session
 };
 
 // Imports from other modules
@@ -211,7 +211,8 @@ pub fn run() {
             probe_model_audio,
             probe_model_video,
             force_cancel_task,
-            cleanup_orphaned_tasks
+            cleanup_orphaned_tasks,
+            refresh_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
