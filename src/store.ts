@@ -43,6 +43,7 @@ interface AppState {
   setSession: (session: any) => void;
   fetchLocalData: () => Promise<void>;
   addCustomModel: (model: Omit<CustomModel, "id">, apiKey: string) => Promise<void>;
+  updateCustomModel: (id: string, model: Omit<CustomModel, "id">, apiKey?: string) => Promise<void>;
   deleteCustomModel: (id: string) => Promise<void>;
   testModel: (provider: string, model: string, baseUrl: string | null, apiKey: string) => Promise<string>;
   syncLocalToCloud: () => Promise<void>;
@@ -104,17 +105,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   addCustomModel: async (modelData, apiKey) => {
     const id = crypto.randomUUID();
-    const newModel: CustomModel = {
-      ...modelData,
-      id,
-    };
-    
-    // Save model details to SQLite (backend will automatically handle cloud sync)
+    const newModel: CustomModel = { ...modelData, id };
     await invoke("save_custom_model", { model: newModel });
-    
-    // Save API key to Keychain
     await invoke("save_api_key", { name: id, value: apiKey });
-    
+    await get().fetchLocalData();
+  },
+
+  updateCustomModel: async (id, modelData, apiKey) => {
+    const updatedModel: CustomModel = { ...modelData, id };
+    await invoke("save_custom_model", { model: updatedModel });
+    if (apiKey && apiKey.trim() && !apiKey.includes("•")) {
+      await invoke("save_api_key", { name: id, value: apiKey });
+    }
     await get().fetchLocalData();
   },
 
