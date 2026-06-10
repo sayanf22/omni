@@ -19,7 +19,8 @@ use storage::keychain::{save_api_key, get_api_key, has_api_key, delete_api_key};
 use storage::sqlite::{
     get_recent_tasks, get_audit_log, save_setting, get_setting, clear_all_local_data, init_db,
     save_custom_model, delete_custom_model, get_custom_models, get_active_model_for_role,
-    get_unsynced_local_tasks, mark_task_synced_local, get_unsynced_local_audit, mark_audit_synced_local
+    get_unsynced_local_tasks, mark_task_synced_local, get_unsynced_local_audit, mark_audit_synced_local,
+    force_cancel_task, cleanup_orphaned_tasks
 };
 use storage::supabase::{
     supabase_login, supabase_signup, supabase_login_with_otp, get_supabase_session, supabase_logout, sync_local_to_cloud
@@ -79,6 +80,12 @@ pub fn run() {
     // Initialize SQLite database
     if let Err(e) = init_db() {
         tracing::error!("Failed to initialize local SQLite database: {:?}", e);
+    }
+
+    // Clean up any tasks stuck in "running" from a previous crash/restart
+    match storage::sqlite::cleanup_orphaned_tasks() {
+        Ok(n) if n > 0 => tracing::info!("Cleaned up {} orphaned running task(s)", n),
+        _ => {}
     }
 
     tauri::Builder::default()
@@ -202,7 +209,9 @@ pub fn run() {
             get_hotkeys,
             probe_model_vision,
             probe_model_audio,
-            probe_model_video
+            probe_model_video,
+            force_cancel_task,
+            cleanup_orphaned_tasks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

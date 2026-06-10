@@ -86,7 +86,8 @@ const ModelForm: React.FC<ModelFormProps> = ({
   const [displayName, setDisplayName] = useState(editModel?.display_name || "OpenAI GPT-4o mini");
   const [modelName, setModelName] = useState(editModel?.model_name || "gpt-4o-mini");
   const [baseUrl, setBaseUrl]     = useState(editModel?.base_url || "");
-  const [apiKey, setApiKey]       = useState(isEdit ? "••••••••••••••••" : "");
+  const [apiKey, setApiKey]       = useState("");
+  const [useStoredKey, setUseStoredKey] = useState(isEdit); // edit starts assuming saved key
   const [isActive, setIsActive]   = useState(editModel?.is_active ?? true);
   const [roleCoding, setRoleCoding]   = useState(editModel?.role_coding ?? false);
   const [roleWriting, setRoleWriting] = useState(editModel?.role_writing ?? false);
@@ -121,17 +122,20 @@ const ModelForm: React.FC<ModelFormProps> = ({
 
   // Sequential capability test: text → vision → audio → video
   const handleTest = async () => {
-    // Resolve key (typed, or stored from keychain when editing)
-    let keyToUse = apiKey.includes("•") ? "" : apiKey;
+    // Resolve key: use typed key if present, else stored key (edit mode)
+    const typedKey = apiKey.trim();
+    let keyToUse = typedKey;
+
     if (!keyToUse && isEdit && editModel) {
       try {
         const storedKey = await invoke<string | null>("get_api_key", { name: editModel.id });
-        if (storedKey) keyToUse = storedKey;
+        if (storedKey && storedKey.trim()) keyToUse = storedKey.trim();
       } catch (e) { console.warn("Could not load stored key:", e); }
     }
+
     if (!keyToUse) {
       setTestError(isEdit
-        ? "Could not load saved key — please re-enter your API key in the field above."
+        ? "No saved key found. Paste your API key in the field above, then test."
         : "Enter your API key first.");
       return;
     }
@@ -147,36 +151,41 @@ const ModelForm: React.FC<ModelFormProps> = ({
     try {
       await testModelFn(provider, modelName, baseUrl || null, keyToUse);
       setCapText("yes");
-      // A working text model can do coding + writing — auto-enable those roles
       setRoleCoding(true);
       setRoleWriting(true);
     } catch (e: any) {
       setCapText("no");
-      setTestError(typeof e === "string" ? e : e?.message || "Connection failed. Check your API key and model ID.");
+      const raw = typeof e === "string" ? e : e?.message || String(e);
+      const isAuth = /401|unauthorized|missing auth|invalid.*key|authentication/i.test(raw);
+      if (isAuth) {
+        setTestError(
+          typedKey
+            ? "Authentication failed — this API key is invalid or expired. Double-check the key and try again."
+            : "The saved API key is invalid or expired. Paste a fresh key in the field above and test again."
+        );
+        // Force the user toward entering a new key
+        setUseStoredKey(false);
+      } else {
+        setTestError(raw || "Connection failed. Check the model ID and your API key.");
+      }
       setTesting(false);
-      return; // stop the chain — if text fails, nothing else will work
+      return;
     }
 
-    // 2️⃣ VISION — image input
+    // 2️⃣ VISION
     setCapVision("testing");
-    try {
-      const v = await invoke<boolean>("probe_model_vision", args);
-      setCapVision(v ? "yes" : "no");
-    } catch { setCapVision("no"); }
+    try { const v = await invoke<boolean>("probe_model_vision", args); setCapVision(v ? "yes" : "no"); }
+    catch { setCapVision("no"); }
 
-    // 3️⃣ AUDIO — audio input
+    // 3️⃣ AUDIO
     setCapAudio("testing");
-    try {
-      const a = await invoke<boolean>("probe_model_audio", args);
-      setCapAudio(a ? "yes" : "no");
-    } catch { setCapAudio("no"); }
+    try { const a = await invoke<boolean>("probe_model_audio", args); setCapAudio(a ? "yes" : "no"); }
+    catch { setCapAudio("no"); }
 
-    // 4️⃣ VIDEO — video input
+    // 4️⃣ VIDEO
     setCapVideo("testing");
-    try {
-      const vid = await invoke<boolean>("probe_model_video", args);
-      setCapVideo(vid ? "yes" : "no");
-    } catch { setCapVideo("no"); }
+    try { const vid = await invoke<boolean>("probe_model_video", args); setCapVideo(vid ? "yes" : "no"); }
+    catch { setCapVideo("no"); }
 
     setTesting(false);
   };
@@ -193,7 +202,8 @@ const ModelForm: React.FC<ModelFormProps> = ({
     }
 
     setSaving(true);
-    const keyToSave = apiKey.includes("•") ? undefined : apiKey;
+    const typedKey = apiKey.trim();
+    const keyToSave = typedKey ? typedKey : undefined; // blank = keep stored key
     const finalVision = capVision === "yes" ? true : capVision === "no" ? false : (editModel?.role_vision ?? false);
 
     const modelData: Omit<CustomModel, "id"> = {
@@ -314,17 +324,45 @@ const ModelForm: React.FC<ModelFormProps> = ({
       {/* API Key */}
       <div>
         <label className="block text-[10px] font-bold text-text-secondary uppercase tracking-wider mb-1">
-          API Key {isEdit && <span className="text-text-muted font-normal">(leave masked to keep current key)</span>}
+          API Key
+          {isEdit && (
+            <span className="text-text-muted font-normal normal-case ml-1">
+              {useStoredKey ? "— a key is already saved; leave blank to keep it, or paste a new one" : "— paste your key"}
+            </span>
+          )}
         </label>
         <input
           type="password"
           required={!isEdit}
           value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          onFocus={() => { if (apiKey.includes("•")) setApiKey(""); }}
-          placeholder={isEdit ? "Enter new key to update, or leave unchanged" : "sk-… or your API key"}
+          onChange={(e) => { setApiKey(e.target.value); if (e.target.value) setUseStoredKey(false); }}
+          placeholder={isEdit
+            ? (useStoredKey ? "•••••••• saved key in use — paste a new key to replace it" : "Paste your API key…")
+            : "sk-… or your provider API key"}
           className="w-full px-3 py-2 bg-surface3 border border-border rounded-lg text-text text-sm focus:outline-none focus:border-accent font-mono"
         />
+        {isEdit && useStoredKey && (
+          <button
+            type="button"
+            onClick={async () => {
+              if (!editModel) return;
+              try {
+                const stored = await invoke<string | null>("get_api_key", { name: editModel.id });
+                if (stored && stored.trim()) {
+                  setApiKey(stored.trim());
+                  setUseStoredKey(false);
+                } else {
+                  setTestError("No saved key found — please paste your API key.");
+                }
+              } catch {
+                setTestError("Could not read saved key — please paste your API key.");
+              }
+            }}
+            className="mt-1.5 text-[10px] font-semibold text-accent hover:underline"
+          >
+            Show / reveal saved key to edit it
+          </button>
+        )}
       </div>
 
       {/* Test button + capability checklist */}

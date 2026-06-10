@@ -426,6 +426,33 @@ pub fn clear_all_local_data() -> Result<(), String> {
     clear_all_data().map_err(|e| e.to_string())
 }
 
+/// Force-mark a task as cancelled directly in SQLite.
+/// Used for orphaned tasks stuck in "running" from a previous app session,
+/// whose background loop is no longer alive to receive the cancel signal.
+#[tauri::command]
+pub fn force_cancel_task(task_id: String) -> Result<(), String> {
+    let path = get_db_path();
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE local_tasks SET status = 'cancelled', outcome = COALESCE(outcome, 'Cancelled by user'), synced_at = NULL WHERE id = ?1 AND status = 'running'",
+        params![task_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Force-mark ALL stuck running tasks as cancelled. Called on app startup
+/// to clean up tasks orphaned by a crash or restart.
+#[tauri::command]
+pub fn cleanup_orphaned_tasks() -> Result<i64, String> {
+    let path = get_db_path();
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    let n = conn.execute(
+        "UPDATE local_tasks SET status = 'cancelled', outcome = COALESCE(outcome, 'Interrupted (app restarted)'), synced_at = NULL WHERE status = 'running'",
+        [],
+    ).map_err(|e| e.to_string())?;
+    Ok(n as i64)
+}
+
 #[tauri::command]
 pub async fn save_custom_model(model: CustomModel) -> Result<(), String> {
     save_custom_model_db(&model).map_err(|e| e.to_string())?;
