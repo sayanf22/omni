@@ -77,11 +77,11 @@ impl Tool for AppTool {
                 match launch_app_internal(name) {
                     Ok(pid) => {
                         // Smart wait: poll for the window to appear instead of a fixed sleep.
-                        // Check every 400ms, up to 8 seconds total (UWP apps can be slow to render).
+                        // Check every 250ms, up to ~6s (most apps appear in <2s).
                         let name_lower = name.to_lowercase();
                         let mut focused = false;
-                        for _ in 0..20 {
-                            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        for _ in 0..24 {
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                             if focus_window_by_name(name).is_ok()
                                 || focus_window_by_name(&name_lower).is_ok()
                             {
@@ -90,14 +90,12 @@ impl Tool for AppTool {
                             }
                         }
                         if !focused {
-                            // Last-resort: try to bring any window with the name in the title
                             let _ = focus_window_by_name(name);
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         Ok(format!(
-                            "Opened '{}' (PID {}). Window is ready. \
-                             IMPORTANT: Do NOT click the title bar or app chrome — click directly on \
-                             the content area (search box, text field, etc.) to interact with it.",
+                            "Opened '{}' (PID {}). Window is focused and maximized. \
+                             Click directly on content (search box, field) — not the title bar.",
                             name, pid
                         ))
                     }

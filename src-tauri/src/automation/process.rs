@@ -669,6 +669,15 @@ pub fn get_system_context() -> String {
         )
     };
 
+    // The window the user is currently looking at — anchors the agent to the
+    // CURRENT flow when it takes over (e.g. the active browser, the open chat).
+    let focused = super::uia::get_focused_window_name();
+    let focused_section = if focused.trim().is_empty() || focused.to_lowercase().contains("omni") {
+        String::new()
+    } else {
+        format!("\n\nThe user is CURRENTLY focused on: \"{}\" — start from here and work with the current state.", focused.trim())
+    };
+
     // Installed apps (cached after first call) — lets the agent know exactly
     // what it can open, so it never guesses or wrongly says "not installed".
     let installed = list_installed_app_names();
@@ -681,7 +690,7 @@ pub fn get_system_context() -> String {
         )
     };
 
-    format!("{}{}", open_section, installed_section)
+    format!("{}{}{}", open_section, focused_section, installed_section)
 }
 
 /// Returns a de-duplicated, lowercased-friendly list of installed application

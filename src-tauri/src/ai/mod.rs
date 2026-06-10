@@ -92,7 +92,20 @@ pub fn detect_task_type(instruction: &str) -> TaskType {
 /// Any role with no configured model finally falls back to *any* active model so
 /// a single-model setup always works.
 pub fn resolve_active_model(task_type: TaskType) -> anyhow::Result<Option<CustomModel>> {
-    // Reasoning gets first crack at a dedicated reasoning model.
+    // ── Single-model short-circuit ──────────────────────────────────────────
+    // If the user has exactly ONE active model, ALWAYS use it. This guarantees
+    // the agent uses the model the user actually configured (e.g. their normal
+    // DeepSeek), and never silently routes to a different/"thinking" model.
+    let active_models: Vec<CustomModel> = crate::storage::sqlite::get_custom_models_db()?
+        .into_iter()
+        .filter(|m| m.is_active)
+        .collect();
+    if active_models.len() == 1 {
+        return Ok(Some(active_models.into_iter().next().unwrap()));
+    }
+
+    // Reasoning gets first crack at a dedicated reasoning model — but ONLY when
+    // the user has actually configured a separate reasoning-capable model.
     if task_type == TaskType::Reasoning {
         if let Some(m) = best_reasoning_model()? {
             return Ok(Some(m));
