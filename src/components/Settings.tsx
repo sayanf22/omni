@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Plus, Trash2, Loader2, XCircle, Key, Keyboard,
-  AlertTriangle, RefreshCw, Eye, EyeOff, Pencil, ChevronDown, ChevronUp
+  AlertTriangle, RefreshCw, Eye, EyeOff, Pencil, ChevronDown, ChevronUp, Check
 } from "lucide-react";
 
 // ── Capability detection ──────────────────────────────────────────────────────
@@ -87,7 +87,6 @@ const ModelForm: React.FC<ModelFormProps> = ({
   const [modelName, setModelName] = useState(editModel?.model_name || "gpt-4o-mini");
   const [baseUrl, setBaseUrl]     = useState(editModel?.base_url || "");
   const [apiKey, setApiKey]       = useState("");
-  const [useStoredKey, setUseStoredKey] = useState(isEdit); // edit starts assuming saved key
   const [isActive, setIsActive]   = useState(editModel?.is_active ?? true);
   const [roleCoding, setRoleCoding]   = useState(editModel?.role_coding ?? false);
   const [roleWriting, setRoleWriting] = useState(editModel?.role_writing ?? false);
@@ -102,7 +101,24 @@ const ModelForm: React.FC<ModelFormProps> = ({
   const [testError, setTestError] = useState<string | null>(null);
   const [hasTested, setHasTested] = useState(isEdit);
 
+  // Whether a usable key is stored locally for this model (edit mode)
+  const [storedKeyState, setStoredKeyState] = useState<"checking" | "present" | "absent">(isEdit ? "checking" : "absent");
+
   const [saving, setSaving] = useState(false);
+
+  // On mount (edit mode): check if a real key is stored locally in Credential Manager
+  React.useEffect(() => {
+    if (!isEdit || !editModel) return;
+    (async () => {
+      try {
+        const stored = await invoke<string | null>("get_api_key", { name: editModel.id });
+        setStoredKeyState(stored && stored.trim() ? "present" : "absent");
+      } catch {
+        setStoredKeyState("absent");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const resetCaps = () => {
     setCapText(null); setCapVision(null); setCapAudio(null); setCapVideo(null);
@@ -163,8 +179,8 @@ const ModelForm: React.FC<ModelFormProps> = ({
             ? "Authentication failed — this API key is invalid or expired. Double-check the key and try again."
             : "The saved API key is invalid or expired. Paste a fresh key in the field above and test again."
         );
-        // Force the user toward entering a new key
-        setUseStoredKey(false);
+        // Nudge the user to enter a fresh key
+        setStoredKeyState("absent");
       } else {
         setTestError(raw || "Connection failed. Check the model ID and your API key.");
       }
@@ -325,44 +341,39 @@ const ModelForm: React.FC<ModelFormProps> = ({
       <div>
         <label className="block text-[10px] font-bold text-text-secondary uppercase tracking-wider mb-1">
           API Key
-          {isEdit && (
-            <span className="text-text-muted font-normal normal-case ml-1">
-              {useStoredKey ? "— a key is already saved; leave blank to keep it, or paste a new one" : "— paste your key"}
-            </span>
-          )}
         </label>
+
+        {/* Stored-key status banner (edit mode) */}
+        {isEdit && storedKeyState !== "checking" && (
+          <div className={`mb-2 flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${
+            storedKeyState === "present"
+              ? "bg-success/10 border border-success/20 text-success"
+              : "bg-warning/10 border border-warning/25 text-warning"
+          }`}>
+            {storedKeyState === "present" ? (
+              <>
+                <Check className="w-3.5 h-3.5 shrink-0" />
+                <span>A saved key exists on this device. Just click <strong>Test &amp; Detect Capabilities</strong> below — no need to re-enter it. Paste a new key only if you want to replace it.</span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span>No key is saved on this device for this model (it may have synced from the cloud). Paste your API key below to test &amp; use it.</span>
+              </>
+            )}
+          </div>
+        )}
+
         <input
           type="password"
           required={!isEdit}
           value={apiKey}
-          onChange={(e) => { setApiKey(e.target.value); if (e.target.value) setUseStoredKey(false); }}
+          onChange={(e) => setApiKey(e.target.value)}
           placeholder={isEdit
-            ? (useStoredKey ? "•••••••• saved key in use — paste a new key to replace it" : "Paste your API key…")
+            ? (storedKeyState === "present" ? "Leave blank to use saved key, or paste a new key…" : "Paste your API key…")
             : "sk-… or your provider API key"}
           className="w-full px-3 py-2 bg-surface3 border border-border rounded-lg text-text text-sm focus:outline-none focus:border-accent font-mono"
         />
-        {isEdit && useStoredKey && (
-          <button
-            type="button"
-            onClick={async () => {
-              if (!editModel) return;
-              try {
-                const stored = await invoke<string | null>("get_api_key", { name: editModel.id });
-                if (stored && stored.trim()) {
-                  setApiKey(stored.trim());
-                  setUseStoredKey(false);
-                } else {
-                  setTestError("No saved key found — please paste your API key.");
-                }
-              } catch {
-                setTestError("Could not read saved key — please paste your API key.");
-              }
-            }}
-            className="mt-1.5 text-[10px] font-semibold text-accent hover:underline"
-          >
-            Show / reveal saved key to edit it
-          </button>
-        )}
       </div>
 
       {/* Test button + capability checklist */}

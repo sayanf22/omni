@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useStore } from "../store";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Search, Download, ChevronDown, ChevronUp,
   Calendar, Clock, Square
@@ -13,6 +14,29 @@ export const Activity: React.FC = () => {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
 
+  const runningTasks = tasks.filter((t) => t.status === "running");
+
+  // Refresh on mount, listen to task lifecycle events, and poll while tasks run
+  useEffect(() => {
+    fetchLocalData();
+
+    const cleanups: Array<() => void> = [];
+    (async () => {
+      for (const evt of ["task:started", "task:step", "task:done", "task:failed", "agent:killed"]) {
+        cleanups.push(await listen(evt, () => fetchLocalData()));
+      }
+    })();
+
+    return () => cleanups.forEach((fn) => fn());
+  }, [fetchLocalData]);
+
+  // While there are running tasks, poll every 2s so status updates promptly
+  useEffect(() => {
+    if (runningTasks.length === 0) return;
+    const id = setInterval(() => fetchLocalData(), 2000);
+    return () => clearInterval(id);
+  }, [runningTasks.length, fetchLocalData]);
+
   const toggleExpand = (taskId: string) => {
     setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
   };
@@ -22,15 +46,18 @@ export const Activity: React.FC = () => {
     e.stopPropagation(); // don't toggle expand
     setStoppingId(taskId);
     try {
-      // Signal the live planner loop (if this task is running in the current session)
+      // 1. Signal the live planner loop (if this task is running in the current session)
       await invoke("cancel_task");
-      // Force-mark the task cancelled in SQLite — handles orphaned tasks from
-      // a previous session whose loop is no longer alive.
+      // 2. Force-mark the task cancelled in SQLite — handles orphaned tasks from
+      //    a previous session whose loop is no longer alive.
       await invoke("force_cancel_task", { taskId });
-      await new Promise((r) => setTimeout(r, 300));
+      // 3. Give the DB write a moment, then refresh the list
+      await new Promise((r) => setTimeout(r, 400));
       await fetchLocalData();
     } catch (err) {
       console.error("Failed to stop task:", err);
+      // Even on error, refresh so the UI reflects reality
+      await fetchLocalData();
     } finally {
       setStoppingId(null);
     }
@@ -56,8 +83,6 @@ export const Activity: React.FC = () => {
     link.click();
     document.body.removeChild(link);
   };
-
-  const runningTasks = tasks.filter((t) => t.status === "running");
 
   // Filter based on statusFilter + search
   const properlyFiltered = tasks.filter((t) => {
