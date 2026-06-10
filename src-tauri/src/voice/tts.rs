@@ -4,12 +4,87 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use rodio::{Decoder, OutputStream, Sink};
 
+/// Strip AI/markdown artifacts so text reads and SPEAKS like natural language.
+/// Removes reasoning tags, code fences, emphasis markers (**, *, _, ~), headings,
+/// blockquotes, inline link syntax, and collapses whitespace. This is what makes
+/// the agent's spoken/displayed replies clean instead of "asterisk asterisk".
+pub fn clean_ai_text(input: &str) -> String {
+    let mut s = input.to_string();
+
+    // 1) Remove <think>…</think> reasoning blocks (reasoning models) + stray tags.
+    loop {
+        if let (Some(start), Some(end)) = (s.find("<think>"), s.find("</think>")) {
+            if end > start { s.replace_range(start..end + "</think>".len(), ""); continue; }
+        }
+        break;
+    }
+    s = s.replace("<think>", "").replace("</think>", "");
+
+    // 2) Code fences + inline code backticks.
+    s = s.replace("```", "");
+    s = s.replace('`', "");
+
+    // 3) Markdown emphasis runs (order matters: longest first).
+    s = s.replace("***", "").replace("**", "").replace("__", "").replace("~~", "");
+
+    // 4) Markdown links [text](url) -> text, and images ![alt](url) -> alt.
+    s = strip_md_links(&s);
+
+    // 5) Per-line: drop leading heading (#), blockquote (>) and bullet markers.
+    let lines: Vec<String> = s.lines().map(|line| {
+        let mut t = line.trim_start();
+        // Strip a leading bullet ("- ", "* ", "• ") once.
+        if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("• ")).or_else(|| t.strip_prefix("* ")) {
+            t = rest.trim_start();
+        }
+        t = t.trim_start_matches('#').trim_start_matches('>').trim_start();
+        t.to_string()
+    }).collect();
+    s = lines.join(" ");
+
+    // 6) Any remaining stray emphasis chars used inline.
+    s = s.replace('*', "");
+
+    // 7) Collapse all whitespace to single spaces.
+    s.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+}
+
+/// Replace markdown link/image syntax with just the visible text. UTF-8 safe.
+fn strip_md_links(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < n {
+        let img = chars[i] == '!' && i + 1 < n && chars[i + 1] == '[';
+        let bracket = if img { i + 1 } else { i };
+        if bracket < n && chars[bracket] == '[' {
+            if let Some(close_rel) = chars[bracket + 1..].iter().position(|&c| c == ']') {
+                let close = bracket + 1 + close_rel;
+                if close + 1 < n && chars[close + 1] == '(' {
+                    if let Some(paren_rel) = chars[close + 2..].iter().position(|&c| c == ')') {
+                        let paren = close + 2 + paren_rel;
+                        out.extend(chars[bracket + 1..close].iter());
+                        i = paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 /// Speaks text aloud. Priority (most natural first):
 ///   1. Cloud (OpenAI tts-1 / ElevenLabs) — only when engine == "cloud" and a key exists.
 ///   2. Piper — local neural TTS, natural sounding, fully offline (if installed).
 ///   3. Windows SAPI — robotic but always available, zero setup.
 pub async fn speak_text(text: &str) -> anyhow::Result<()> {
-    let text = text.trim();
+    // Clean markdown / reasoning artifacts so we never read "asterisk asterisk".
+    let cleaned = clean_ai_text(text);
+    let text = cleaned.trim();
     if text.is_empty() { return Ok(()); }
 
     // Engine preference: "local" (default) | "cloud". Local is offline + instant.

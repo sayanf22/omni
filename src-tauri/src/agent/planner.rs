@@ -472,6 +472,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             Only output done when the FULL goal is genuinely achieved.\n\
          9. Maximum {max_s} steps. Be efficient but COMPLETE — finishing the task matters more than saving steps.\n\
          10. ONE valid JSON object per response. No markdown, no prose outside the JSON.\n\
+         11. VOICE & TONE of the 'result' text (it is SHOWN on screen AND read ALOUD):\n\
+            Talk like a warm, upbeat friend with a little playful teasing — fun, human, never robotic.\n\
+            Be natural and concise, like a happy person chatting. PLAIN TEXT ONLY — absolutely NO\n\
+            markdown or symbols: no asterisks (*), no bold (**), no hashes (#), no backticks, no\n\
+            bullet points, no <think> tags. Example good result: \"All set! I pinged Som for you 😄\"\n\
+            Example bad result: \"**Done.** *Message sent* to `Som`.\"\n\
          \n\
          == UNIVERSAL NAVIGATION ==\n\
          OPEN ANY WEBSITE (fastest):\n\
@@ -574,6 +580,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             If the open chat's name does not match, go back and fix it — do not type into the wrong chat.\n\
          F. Only after the recipient is verified (correct name + group/person known) do you type\n\
             and send the message. These checks apply even when the message text was given to you.\n\
+         G. ALWAYS CONFIRM THE NAME ON THE CARD FIRST — every single time, before typing the\n\
+            message. Ask a short confirmation question so a mis-heard name is always caught:\n\
+            {{\"question\":\"I'll message <name> (<group or person>). Is that the right one, or did you mean a similar name?\"}}\n\
+            Wait for the user's reply. If they correct the name, search again for the corrected\n\
+            name and re-confirm. Only after they say it's correct do you type and send.\n\
          \n\
          == WORKED EXAMPLES ==\n\
          TASK: 'open notepad and write Hello World'\n\
@@ -613,6 +624,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            6 {{\"thought\":\"Wait for results\",\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":1000}}}}\n\
            7 {{\"thought\":\"Find and click contact\",\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"Som\"}}}}\n\
            8 {{\"thought\":\"Click contact\",\"tool\":\"mouse\",\"params\":{{\"action\":\"click\",\"x\":<x>,\"y\":<y>}}}}\n\
+           8b {{\"thought\":\"Confirm the recipient name first\",\"question\":\"I found 'Som' (personal chat). Is that the right person, or did you mean a similar name?\"}}\n\
            9 {{\"thought\":\"Find message input\",\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"Type a message\"}}}}\n\
            10 {{\"thought\":\"Click message box\",\"tool\":\"mouse\",\"params\":{{\"action\":\"click\",\"x\":<x>,\"y\":<y>}}}}\n\
            11 {{\"thought\":\"Type message\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Hello\"}}}}\n\
@@ -978,7 +990,9 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         // ── Case 3: Tool Call ────────────────────────────────────────────────
         let tool_name = parsed["tool"].as_str();
         let tool_params = parsed["params"].clone();
-        let thought = parsed["thought"].as_str().unwrap_or("Executing step.").to_string();
+        let thought = crate::voice::tts::clean_ai_text(
+            parsed["thought"].as_str().unwrap_or("Executing step.")
+        );
 
         if let Some(name) = tool_name {
             // ── Anti-repeat / self-correction guard ──────────────────────────
@@ -1152,6 +1166,10 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             "error": final_outcome.clone()
         }));
     }
+
+    // Sanitize the final outcome so it displays + speaks cleanly (no markdown
+    // like ** or *** or <think> tags leaking into the UI or the voice).
+    final_outcome = crate::voice::tts::clean_ai_text(&final_outcome);
 
     // Save final task
     let final_task = Task {
