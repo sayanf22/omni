@@ -254,9 +254,19 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     }));
 
     // Show the top-right overlay so the user always sees what the agent is doing,
-    // even when the main dashboard is closed or hidden.
+    // even when the main dashboard is closed or hidden. Force it visible + on top
+    // + correctly positioned (robust against minimized / drifted / not-on-top).
     if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.unminimize();
         let _ = overlay.show();
+        let _ = overlay.set_always_on_top(true);
+        if let Ok(Some(monitor)) = overlay.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let screen_w = monitor.size().width as f64 / scale;
+            let x = (screen_w - 360.0).max(0.0) as i32;
+            let _ = overlay.set_position(tauri::LogicalPosition::new(x as f64, 16.0));
+        }
+        let _ = overlay.set_focus();
     }
 
     // ── Takeover: block the user's physical mouse/keyboard so they don't fight

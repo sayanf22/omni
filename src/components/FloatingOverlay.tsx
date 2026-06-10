@@ -56,7 +56,9 @@ const hideTextInput = async () => {
 const setWindowHeight = async (h: number) => {
   try {
     const inner = await win().innerSize();
-    await win().setSize({ type: "Logical", width: inner.width, height: Math.round(h) } as any);
+    // Clamp to a sane visible range so the window can never collapse to nothing.
+    const clamped = Math.max(56, Math.min(620, Math.round(h)));
+    await win().setSize({ type: "Logical", width: inner.width || 340, height: clamped } as any);
   } catch (_) {}
 };
 

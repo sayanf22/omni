@@ -838,6 +838,28 @@ fn extract_zip_flat(zip_path: &PathBuf, dir: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Query the GitHub API for the latest whisper.cpp release and return the
+/// download URL of the `whisper-bin-x64.zip` asset (CPU build). None on failure.
+async fn resolve_whisper_bin_url() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build().ok()?;
+    let resp = client
+        .get("https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest")
+        .header("User-Agent", "Omni-Agent")
+        .header("Accept", "application/vnd.github+json")
+        .send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let assets = json["assets"].as_array()?;
+    for a in assets {
+        if a["name"].as_str() == Some("whisper-bin-x64.zip") {
+            return a["browser_download_url"].as_str().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
 /// Tauri command — download a working offline Whisper engine + English model
 /// into %APPDATA%\Omni\whisper\ so voice works locally with zero manual steps.
 /// Emits `whisper:download` progress events. Safe to call repeatedly (skips
@@ -858,14 +880,16 @@ pub async fn download_whisper(app: tauri::AppHandle) -> Result<String, String> {
         ).await.map_err(|e| format!("Model download failed: {}", e))?;
     }
 
-    // 2) Engine binary (whisper.cpp prebuilt Windows x64) from a pinned release.
+    // 2) Engine binary (whisper.cpp prebuilt Windows x64).
     if find_whisper_binary().is_none() {
         let _ = app.emit("whisper:download", serde_json::json!({"stage":"engine","pct":0}));
+        // Resolve the CURRENT release asset URL from the GitHub API so we never
+        // 404 on a version that has been superseded. Fall back to a pinned URL.
+        let bin_url = resolve_whisper_bin_url().await
+            .unwrap_or_else(|| "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.6/whisper-bin-x64.zip".to_string());
         let zip_path = dir.join("whisper-bin.zip");
-        download_file(
-            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.4/whisper-bin-x64.zip",
-            &zip_path, &app, "engine",
-        ).await.map_err(|e| format!("Engine download failed: {}", e))?;
+        download_file(&bin_url, &zip_path, &app, "engine")
+            .await.map_err(|e| format!("Engine download failed: {}", e))?;
         extract_zip_flat(&zip_path, &dir).map_err(|e| format!("Engine extract failed: {}", e))?;
         let _ = std::fs::remove_file(&zip_path);
     }

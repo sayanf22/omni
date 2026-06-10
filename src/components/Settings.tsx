@@ -777,9 +777,16 @@ export const Settings: React.FC = () => {
   }, []);
 
   const handleSaveElevenLabs = async () => {
+    const key = elevenLabsKey.trim();
+    if (!key || key.includes("•")) { alert("Enter a valid ElevenLabs API key."); return; }
     try {
-      await invoke("save_api_key", { name: "elevenlabs", value: elevenLabsKey });
-      alert("ElevenLabs key saved.");
+      // Test the key before saving (GET /v1/user with the key).
+      const ok = await invoke<boolean>("test_elevenlabs_key", { apiKey: key }).catch(() => false);
+      if (!ok) { alert("That ElevenLabs key didn't work. Double-check it and try again."); return; }
+      await invoke("save_api_key", { name: "elevenlabs", value: key });
+      await invoke("save_setting", { key: "tts_engine", value: "cloud" });
+      alert("ElevenLabs key verified and saved.");
+      refreshSttStatus();
     } catch (e: any) { alert("Failed: " + e); }
   };
 

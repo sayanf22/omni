@@ -64,6 +64,18 @@ fn openai_key() -> Option<String> {
     None
 }
 
+/// Tauri command — verify an ElevenLabs API key works before saving it.
+#[tauri::command]
+pub async fn test_elevenlabs_key(api_key: String) -> Result<bool, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get("https://api.elevenlabs.io/v1/user")
+        .header("xi-api-key", api_key)
+        .send().await.map_err(|e| e.to_string())?;
+    Ok(resp.status().is_success())
+}
+
 /// OpenAI text-to-speech (tts-1). Returns mp3 bytes.
 async fn call_openai_tts(text: &str, api_key: &str) -> anyhow::Result<Vec<u8>> {
     let client = reqwest::Client::builder()
