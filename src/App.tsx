@@ -8,6 +8,7 @@ import { Onboarding } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
 import { FloatingOverlay } from "./components/FloatingOverlay";
 import { TextInputOverlay } from "./components/TextInputOverlay";
+import { VoicePill } from "./components/VoicePill";
 
 function App() {
   const { session, setSession, models, fetchLocalData } = useStore();
@@ -67,17 +68,17 @@ function App() {
 
   // Handle Authentication routing
   if (!session) {
-    return <Login />;
+    return <><Login /><VoicePill /></>;
   }
 
   // Handle Onboarding routing (authenticated but has no custom models registered)
   const hasModels = models.length > 0;
   if (!hasModels) {
-    return <Onboarding onComplete={fetchLocalData} />;
+    return <><Onboarding onComplete={fetchLocalData} /><VoicePill /></>;
   }
 
   // Main Dashboard View
-  return <Dashboard />;
+  return <><Dashboard /><VoicePill /></>;
 }
 
 export default App;

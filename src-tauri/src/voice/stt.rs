@@ -348,11 +348,17 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
             let is_test = TEST_MODE.swap(false, std::sync::atomic::Ordering::SeqCst);
             match process_and_transcribe(captured_samples, cap_rate, cap_channels).await {
                 Ok(text) if !text.trim().is_empty() => {
-                    tracing::info!("Voice transcript: '{}'", text.trim());
+                    let said = text.trim().to_string();
+                    tracing::info!("Voice transcript: '{}'", said);
                     if is_test {
-                        let _ = app_tx.emit("voice:test_result", serde_json::json!({ "text": text.trim(), "ok": true }));
+                        let _ = app_tx.emit("voice:test_result", serde_json::json!({ "text": said, "ok": true }));
                     } else {
-                        let _ = app_tx.emit("voice:transcript", serde_json::json!({ "text": text.trim() }));
+                        // Show the transcript in the UI…
+                        let _ = app_tx.emit("voice:transcript", serde_json::json!({ "text": said }));
+                        // …and RUN IT directly from the backend (does NOT depend on
+                        // any frontend window being alive). This is the reliable link
+                        // from speech → agent.
+                        let _ = crate::agent::planner::run_task(said, String::new(), app_tx.clone()).await;
                     }
                 }
                 Ok(_) => {

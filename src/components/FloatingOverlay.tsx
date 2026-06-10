@@ -215,7 +215,8 @@ export const FloatingOverlay: React.FC = () => {
         setHeaderText("Transcribing what you said…");
       }));
 
-      // Voice transcript — show EXACTLY what was heard, prominently and persistently
+      // Voice transcript — show EXACTLY what was heard (the BACKEND runs the task,
+      // so we only display here; no run_task call to avoid running it twice).
       cleanups.push(await listen<{ text: string }>("voice:transcript", async (e) => {
         await hideTextInput();
         await show();
@@ -224,8 +225,6 @@ export const FloatingOverlay: React.FC = () => {
         setState("thinking");
         setHeaderText("Understood — starting…");
         setSteps([]);
-        try { invoke("run_task", { instruction: said, userId: "" }); }
-        catch (err: any) { setState("error"); setHeaderText(err?.toString() || "Failed"); }
       }));
 
       // Task started

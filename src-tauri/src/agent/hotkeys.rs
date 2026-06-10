@@ -172,6 +172,7 @@ pub fn get_hotkeys() -> Result<serde_json::Value, String> {
 // ── Event handler (called by lib.rs shortcut plugin callback) ────────────────
 
 pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: ShortcutState) {
+    tracing::info!("Shortcut event: {:?} state={:?}", shortcut, state);
     let (mic_str, text_str) = load_hotkey_strings();
 
     // Parse current shortcuts from stored settings for comparison
@@ -180,6 +181,7 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
     let esc_shortcut  = Shortcut::new(None, Code::Escape);
 
     if mic_shortcut.map_or(false, |s| s == shortcut) {
+        tracing::info!("Mic hotkey matched (state={:?}), is_recording={}", state, crate::voice::stt::is_recording());
         // ── Voice command — PRESS TO START, auto-stops on silence ─────────────
         // Toggle model: ignore Released entirely (unreliable for modifier combos).
         // First press starts recording (auto-stops when you stop talking); a
