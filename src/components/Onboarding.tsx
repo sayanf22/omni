@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield, Check, ChevronRight, ChevronLeft,
-  Loader2, Sparkles, Zap
+  Loader2, Sparkles, Zap, Lock, Brain
 } from "lucide-react";
 
 interface OnboardingProps {
@@ -68,6 +68,14 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [capVision, setCapVision]   = useState<CapResult>(null);
   const [capAudio, setCapAudio]     = useState<CapResult>(null);
   const [capVideo, setCapVideo]     = useState<CapResult>(null);
+
+  // Auto-detect reasoning from model name
+  const [isReasoningModel, setIsReasoningModel] = useState<boolean | null>(null);
+  React.useEffect(() => {
+    if (!modelName.trim()) { setIsReasoningModel(null); return; }
+    invoke<boolean>("detect_model_reasoning", { providerType: provider, modelName: modelName.trim() })
+      .then(setIsReasoningModel).catch(() => setIsReasoningModel(null));
+  }, [provider, modelName]);
 
   const addCustomModel = useStore((s) => s.addCustomModel);
   const testModelFn    = useStore((s) => s.testModel);
@@ -297,9 +305,28 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 className="overflow-y-auto"
               >
                 <h2 style={{ color: "#f4f4f5", fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Connect AI Model</h2>
-                <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
-                  Add your AI provider key. Keys are saved in Windows Credential Manager only — never leave your device.
+                <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>
+                  Add your AI provider key to get started.
                 </p>
+
+                {/* ── Security notice ── */}
+                <div style={{
+                  display: "flex", alignItems: "flex-start", gap: 10,
+                  background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)",
+                  borderRadius: 12, padding: "10px 14px", marginBottom: 14,
+                }}>
+                  <Lock style={{ width: 14, height: 14, color: "#10b981", flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <p style={{ color: "#10b981", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>
+                      Your API keys are private and stay on your device
+                    </p>
+                    <p style={{ color: "#6b7280", fontSize: 11, lineHeight: 1.6 }}>
+                      Keys are stored in <strong style={{ color: "#9ca3af" }}>Windows Credential Manager</strong> (DPAPI-encrypted).
+                      They are never sent to Omni servers, never logged, and never leave your PC.
+                      Only the AI provider you choose receives them.
+                    </p>
+                  </div>
+                </div>
 
                 {/* Provider tabs */}
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
@@ -356,6 +383,26 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                         onFocus={(e) => { e.target.style.borderColor = "#5a5a6a"; }}
                         onBlur={(e) => { e.target.style.borderColor = "#2e2e34"; }}
                       />
+                    </div>
+                  )}
+
+                  {/* Reasoning auto-detect badge */}
+                  {isReasoningModel !== null && modelName.trim() && (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      background: isReasoningModel ? "rgba(168,85,247,0.1)" : "#1a1a1d",
+                      border: `1px solid ${isReasoningModel ? "rgba(168,85,247,0.3)" : "#2e2e34"}`,
+                      borderRadius: 10, padding: "8px 12px",
+                    }}>
+                      {isReasoningModel
+                        ? <Brain style={{ width: 13, height: 13, color: "#c084fc", flexShrink: 0 }} />
+                        : <Zap style={{ width: 13, height: 13, color: "#6b7280", flexShrink: 0 }} />
+                      }
+                      <p style={{ color: isReasoningModel ? "#c084fc" : "#71717A", fontSize: 11, lineHeight: 1.4 }}>
+                        {isReasoningModel
+                          ? "Reasoning model detected — Omni will auto-route analytical tasks (analyze, solve, compare…) to this model."
+                          : "Standard model — handles everyday tasks (browse, write, code, automate)."}
+                      </p>
                     </div>
                   )}
 

@@ -364,6 +364,24 @@ pub async fn probe_model_vision(
     Ok(test_vision_capability(&model, &api_key).await)
 }
 
+/// Tauri command — heuristic check: does this model name look like a reasoning model?
+/// Used by the frontend to auto-classify models when the user adds them.
+#[tauri::command]
+pub fn detect_model_reasoning(provider_type: String, model_name: String) -> bool {
+    let model = crate::storage::sqlite::CustomModel {
+        id: "detect".to_string(),
+        provider_type,
+        model_name,
+        display_name: "detect".to_string(),
+        base_url: None,
+        role_vision: false,
+        role_coding: false,
+        role_writing: false,
+        is_active: false,
+    };
+    model_is_reasoning(&model)
+}
+
 fn build_messages_openai(messages: Vec<ChatMessage>, screenshot_base64: Option<String>) -> Vec<serde_json::Value> {
     let len = messages.len();
     let mut out = Vec::new();

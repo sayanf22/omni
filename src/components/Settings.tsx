@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Plus, Trash2, Loader2, XCircle, Key, Keyboard,
-  AlertTriangle, RefreshCw, Eye, EyeOff, Pencil, ChevronDown, ChevronUp, Check
+  AlertTriangle, RefreshCw, Eye, EyeOff, Pencil, ChevronDown, ChevronUp, Check,
+  Brain, Zap, Power, ToggleLeft, ToggleRight
 } from "lucide-react";
 
 // ── Capability detection ──────────────────────────────────────────────────────
@@ -90,6 +91,28 @@ const ModelForm: React.FC<ModelFormProps> = ({
   const [isActive, setIsActive]   = useState(editModel?.is_active ?? true);
   const [roleCoding, setRoleCoding]   = useState(editModel?.role_coding ?? false);
   const [roleWriting, setRoleWriting] = useState(editModel?.role_writing ?? false);
+
+  // "Both" mode: when enabled, the system auto-classifies all tasks (reasoning vs basic)
+  // using this model as a universal fallback — no need to manually set individual roles.
+  // When enabled we set all role flags true; the routing still prefers a reasoning model
+  // for analytical tasks automatically.
+  const [bothMode, setBothMode] = useState(
+    isEdit
+      ? (editModel.role_coding && editModel.role_writing)
+      : false
+  );
+
+  // Reasoning classification hint — fetched from Rust when model name changes.
+  const [isReasoningModel, setIsReasoningModel] = useState<boolean | null>(null);
+
+  // Auto-detect reasoning whenever modelName or provider changes.
+  React.useEffect(() => {
+    if (!modelName.trim()) { setIsReasoningModel(null); return; }
+    invoke<boolean>("detect_model_reasoning", {
+      providerType: provider,
+      modelName: modelName.trim(),
+    }).then((r) => setIsReasoningModel(r)).catch(() => setIsReasoningModel(null));
+  }, [provider, modelName]);
 
   // Capability detection state — each: null | "testing" | "yes" | "no" | "skip"
   type CapState = null | "testing" | "yes" | "no" | "skip";
@@ -424,23 +447,102 @@ const ModelForm: React.FC<ModelFormProps> = ({
         )}
       </div>
 
-      {/* Role + active settings (collapsed unless editing) */}
-      <div className="grid grid-cols-3 gap-3 pt-1 border-t border-border">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={roleCoding} onChange={(e) => setRoleCoding(e.target.checked)}
-            className="w-3.5 h-3.5 accent-white rounded" />
-          <span className="text-xs text-text-secondary">Coding tasks</span>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={roleWriting} onChange={(e) => setRoleWriting(e.target.checked)}
-            className="w-3.5 h-3.5 accent-white rounded" />
-          <span className="text-xs text-text-secondary">Writing tasks</span>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)}
-            className="w-3.5 h-3.5 accent-white rounded" />
-          <span className="text-xs text-text-secondary">Active (used by agent)</span>
-        </label>
+      {/* ── Reasoning badge — auto-detected from model name ── */}
+      {isReasoningModel !== null && modelName.trim() && (
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold border ${
+          isReasoningModel
+            ? "bg-purple-500/10 border-purple-500/25 text-purple-300"
+            : "bg-surface3 border-border text-text-secondary"
+        }`}>
+          {isReasoningModel
+            ? <Brain className="w-3.5 h-3.5 shrink-0 text-purple-400" />
+            : <Zap className="w-3.5 h-3.5 shrink-0 text-text-muted" />
+          }
+          <span>
+            {isReasoningModel
+              ? "Reasoning model detected — will be auto-selected for analytical tasks (analyze, solve, compare…)"
+              : "Standard model — used for everyday tasks (browse, write, code, automate)"}
+          </span>
+        </div>
+      )}
+
+      {/* ── Task routing mode + active toggle ── */}
+      <div className="pt-1 border-t border-border space-y-3">
+        <p className="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Task Routing & Activation</p>
+
+        {/* BOTH mode toggle */}
+        <div
+          onClick={() => {
+            const next = !bothMode;
+            setBothMode(next);
+            if (next) { setRoleCoding(true); setRoleWriting(true); }
+          }}
+          className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all select-none ${
+            bothMode
+              ? "bg-accent/10 border-accent/30"
+              : "bg-surface3 border-border hover:border-border-light"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <Zap className={`w-4 h-4 shrink-0 ${bothMode ? "text-accent" : "text-text-muted"}`} />
+            <div>
+              <p className={`text-xs font-semibold ${bothMode ? "text-text" : "text-text-secondary"}`}>
+                Use for all task types (Both)
+              </p>
+              <p className="text-[10px] text-text-muted leading-snug">
+                Omni picks this model for any task. Reasoning vs basic is auto-decided per request.
+              </p>
+            </div>
+          </div>
+          {bothMode
+            ? <ToggleRight className="w-5 h-5 text-accent shrink-0" />
+            : <ToggleLeft className="w-5 h-5 text-text-muted shrink-0" />
+          }
+        </div>
+
+        {/* Manual role checkboxes — only shown when "Both" is OFF */}
+        {!bothMode && (
+          <div className="flex gap-3 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={roleCoding} onChange={(e) => setRoleCoding(e.target.checked)}
+                className="w-3.5 h-3.5 accent-white rounded" />
+              <span className="text-xs text-text-secondary">Coding tasks</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={roleWriting} onChange={(e) => setRoleWriting(e.target.checked)}
+                className="w-3.5 h-3.5 accent-white rounded" />
+              <span className="text-xs text-text-secondary">Writing tasks</span>
+            </label>
+          </div>
+        )}
+
+        {/* Active / disabled toggle */}
+        <div
+          onClick={() => setIsActive((v) => !v)}
+          className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all select-none ${
+            isActive
+              ? "bg-success/8 border-success/20"
+              : "bg-surface3 border-border hover:border-border-light"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <Power className={`w-4 h-4 shrink-0 ${isActive ? "text-success" : "text-text-muted"}`} />
+            <div>
+              <p className={`text-xs font-semibold ${isActive ? "text-text" : "text-text-secondary"}`}>
+                {isActive ? "Active — used by agent" : "Inactive — paused"}
+              </p>
+              <p className="text-[10px] text-text-muted">
+                {isActive
+                  ? "Agent will call this model. Toggle off to pause without deleting."
+                  : "Model is saved but the agent won't use it until re-enabled."}
+              </p>
+            </div>
+          </div>
+          {isActive
+            ? <ToggleRight className="w-5 h-5 text-success shrink-0" />
+            : <ToggleLeft className="w-5 h-5 text-text-muted shrink-0" />
+          }
+        </div>
       </div>
 
       {/* Form actions */}
@@ -470,14 +572,27 @@ interface ModelCardProps {
   model: CustomModel;
   onEdit: (m: CustomModel) => void;
   onDelete: (id: string) => void;
+  onToggleActive: (m: CustomModel) => void;
 }
 
-const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete }) => {
+const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete, onToggleActive }) => {
   const [expanded, setExpanded] = useState(false);
   const cap = capabilityLabel(model);
+  const [isReasoning, setIsReasoning] = useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    invoke<boolean>("detect_model_reasoning", {
+      providerType: model.provider_type,
+      modelName: model.model_name,
+    }).then(setIsReasoning).catch(() => setIsReasoning(null));
+  }, [model.provider_type, model.model_name]);
 
   return (
-    <div className="bg-surface2 border border-border rounded-xl overflow-hidden">
+    <div className={`border rounded-xl overflow-hidden transition-all ${
+      model.is_active
+        ? "bg-surface2 border-border"
+        : "bg-surface border-border opacity-55"
+    }`}>
       {/* Main row */}
       <div className="p-4 flex items-center gap-3">
         {/* Vision indicator pill */}
@@ -497,9 +612,20 @@ const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete }) => {
             <span className="text-[10px] text-text-muted font-mono bg-surface3 px-1.5 py-0.5 rounded border border-border uppercase tracking-wide">
               {model.provider_type}
             </span>
-            {model.is_active && (
-              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/25">
+            {/* Reasoning badge */}
+            {isReasoning === true && (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/25 flex items-center gap-0.5">
+                <Brain className="w-2.5 h-2.5" /> Reasoning
+              </span>
+            )}
+            {/* Active / Inactive badge */}
+            {model.is_active ? (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-success/15 text-success border border-success/25">
                 Active
+              </span>
+            ) : (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-surface3 text-text-muted border border-border">
+                Paused
               </span>
             )}
           </div>
@@ -508,6 +634,18 @@ const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete }) => {
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          {/* Active toggle button */}
+          <button
+            onClick={() => onToggleActive(model)}
+            title={model.is_active ? "Pause this model" : "Enable this model"}
+            className={`p-1.5 rounded transition-colors ${
+              model.is_active
+                ? "text-success hover:text-warning"
+                : "text-text-muted hover:text-success"
+            }`}
+          >
+            <Power className="w-3.5 h-3.5" />
+          </button>
           <button
             onClick={() => setExpanded(!expanded)}
             className="p-1.5 text-text-muted hover:text-text transition-colors rounded"
@@ -538,31 +676,25 @@ const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete }) => {
           <p className="text-xs text-text-secondary mt-2">{cap.description}</p>
 
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {/* What this model can DO */}
-            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">
-              ✓ Text generation
-            </span>
-            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">
-              ✓ Code generation
-            </span>
-            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">
-              ✓ Task automation
-            </span>
+            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">✓ Text generation</span>
+            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">✓ Code generation</span>
+            <span className="text-[9px] font-bold bg-surface3 border border-border text-text-muted px-2 py-0.5 rounded uppercase">✓ Task automation</span>
             {cap.vision && (
-              <span className="text-[9px] font-bold bg-success/10 border border-success/20 text-success px-2 py-0.5 rounded uppercase">
-                ✓ Screen vision
+              <span className="text-[9px] font-bold bg-success/10 border border-success/20 text-success px-2 py-0.5 rounded uppercase">✓ Screen vision</span>
+            )}
+            {isReasoning === true && (
+              <span className="text-[9px] font-bold bg-purple-500/10 border border-purple-500/20 text-purple-300 px-2 py-0.5 rounded uppercase flex items-center gap-0.5">
+                <Brain className="w-2.5 h-2.5" /> Auto-reasoning
               </span>
             )}
-            {/* Assigned roles */}
-            {model.role_coding && (
-              <span className="text-[9px] font-bold bg-accent/10 border border-accent/20 text-accent px-2 py-0.5 rounded uppercase">
-                Coding role
-              </span>
+            {model.role_coding && !model.role_writing && (
+              <span className="text-[9px] font-bold bg-accent/10 border border-accent/20 text-accent px-2 py-0.5 rounded uppercase">Coding role</span>
             )}
-            {model.role_writing && (
-              <span className="text-[9px] font-bold bg-accent/10 border border-accent/20 text-accent px-2 py-0.5 rounded uppercase">
-                Writing role
-              </span>
+            {model.role_writing && !model.role_coding && (
+              <span className="text-[9px] font-bold bg-accent/10 border border-accent/20 text-accent px-2 py-0.5 rounded uppercase">Writing role</span>
+            )}
+            {model.role_coding && model.role_writing && (
+              <span className="text-[9px] font-bold bg-accent/10 border border-accent/20 text-accent px-2 py-0.5 rounded uppercase">All tasks</span>
             )}
           </div>
 
@@ -571,14 +703,21 @@ const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete }) => {
             <div className="flex items-start gap-1.5 mt-2">
               <AlertTriangle className="w-3 h-3 text-warning shrink-0 mt-0.5" />
               <p className="text-[10px] text-warning leading-relaxed">
-                This model cannot see your screen. It will automate via OCR + accessibility tree instead.
-                For full screen control, add a vision model (GPT-4o, Claude 3, Gemini).
+                No screen vision. Omni uses OCR + accessibility tree instead. For full visual control, add GPT-4o, Claude 3, or Gemini.
               </p>
             </div>
           )}
 
           {model.base_url && (
             <p className="text-[10px] text-text-muted font-mono mt-1">Endpoint: {model.base_url}</p>
+          )}
+
+          {/* Inactive explanation */}
+          {!model.is_active && (
+            <div className="flex items-center gap-1.5 mt-1 px-2 py-1.5 rounded-lg bg-surface3 border border-border">
+              <Power className="w-3 h-3 text-text-muted shrink-0" />
+              <p className="text-[10px] text-text-muted">Model is paused — agent won't use it. Click the power icon above to re-enable.</p>
+            </div>
           )}
         </div>
       )}
@@ -652,6 +791,13 @@ export const Settings: React.FC = () => {
     if (confirm("Delete this model and remove its API key?")) {
       try { await deleteCustomModel(id); } catch (e) { console.error(e); }
     }
+  };
+
+  // Toggle a model's active state without opening the full edit form.
+  const handleToggleActive = async (model: CustomModel) => {
+    try {
+      await updateCustomModel(model.id, { ...model, is_active: !model.is_active });
+    } catch (e) { console.error("Failed to toggle model active state:", e); }
   };
 
   const openAddForm = () => { setEditModel(undefined); setShowForm(true); };
@@ -747,8 +893,9 @@ export const Settings: React.FC = () => {
           <div>
             <h3 className="font-semibold text-text text-sm">AI Models</h3>
             <p className="text-xs text-text-secondary mt-0.5">
-              Models you add here are tested against their real API to detect text, coding, and vision capabilities.
-              The agent picks the right model automatically per task.
+              Add models with their API keys. Capabilities are detected by testing the real API.
+              Toggle <strong>Both</strong> to handle all tasks, or assign specific roles.
+              The agent auto-routes to a reasoning model for analytical tasks.
             </p>
           </div>
           {!showForm && (
@@ -774,7 +921,7 @@ export const Settings: React.FC = () => {
 
         <div className="space-y-3">
           {models.map((m) => (
-            <ModelCard key={m.id} model={m} onEdit={openEditForm} onDelete={handleDelete} />
+            <ModelCard key={m.id} model={m} onEdit={openEditForm} onDelete={handleDelete} onToggleActive={handleToggleActive} />
           ))}
           {models.length === 0 && !showForm && (
             <div className="text-center py-12 border border-dashed border-border rounded-xl space-y-2">
