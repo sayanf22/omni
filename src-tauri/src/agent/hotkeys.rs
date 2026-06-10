@@ -180,44 +180,29 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
     let esc_shortcut  = Shortcut::new(None, Code::Escape);
 
     if mic_shortcut.map_or(false, |s| s == shortcut) {
-        // ── Mic walkie-talkie ─────────────────────────────────────────────────
+        // ── Voice command — PRESS TO START, auto-stops on silence ─────────────
+        // Toggle model: ignore Released entirely (unreliable for modifier combos).
+        // First press starts recording (auto-stops when you stop talking); a
+        // second press while recording forces an early stop.
         if state == ShortcutState::Pressed {
+            if crate::voice::stt::is_recording() {
+                // Second press → stop early; the recorder transcribes + emits.
+                crate::voice::stt::request_stop();
+                return;
+            }
             if let Some(overlay) = app.get_webview_window("overlay") {
                 let _ = overlay.show();
                 let _ = overlay.set_focus();
             }
+            let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
             if let Err(e) = crate::voice::stt::start_mic_recording(app.clone()) {
                 tracing::error!("Failed to start mic recording: {:?}", e);
+                let _ = app.emit("task:failed", serde_json::json!({
+                    "error": format!("Could not start microphone: {}", e)
+                }));
             }
-            let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
-
-        } else if state == ShortcutState::Released {
-            let _ = app.emit("hotkey:mic_stop", serde_json::json!({}));
-
-            let app_clone = app.clone();
-            tauri::async_runtime::spawn(async move {
-                match crate::voice::stt::stop_mic_recording().await {
-                    Ok(transcript) => {
-                        let trimmed = transcript.trim().to_string();
-                        if !trimmed.is_empty() {
-                            tracing::info!("Voice transcript: {}", trimmed);
-                            let _ = app_clone.emit("voice:transcript", serde_json::json!({ "text": trimmed }));
-                        } else {
-                            tracing::warn!("Empty transcript from STT");
-                            let _ = app_clone.emit("task:failed", serde_json::json!({
-                                "error": "Could not understand speech. Please speak clearly and try again."
-                            }));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("STT error: {:?}", e);
-                        let _ = app_clone.emit("task:failed", serde_json::json!({
-                            "error": format!("Voice recognition error: {}", e)
-                        }));
-                    }
-                }
-            });
         }
+        // Released is intentionally ignored.
 
     } else if text_shortcut.map_or(false, |s| s == shortcut) && state == ShortcutState::Pressed {
         // ── Text command mode: show the floating text input window ────────────

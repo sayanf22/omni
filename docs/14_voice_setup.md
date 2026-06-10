@@ -2,18 +2,19 @@
 
 ## How speech processing works
 
-When you hold the mic hotkey (**Ctrl+Shift+A**), Omni:
+When you press the mic hotkey (**Ctrl+Shift+A**), Omni:
 
-1. **Records** your microphone using CPAL (direct Windows audio API) — captured as raw
-   f32 samples at your device's native rate/channels.
-2. **Converts** the audio to **16 kHz mono** (required by Whisper, accepted by all engines).
-3. **Transcribes** using the first available engine, in this priority order:
+1. **Starts recording** immediately (the overlay shows a live waveform that reacts to your voice).
+2. **Auto-stops** when you stop talking (~1.2 s of silence) — no need to hold the key.
+   *(Press Ctrl+Shift+A again to stop early; it also stops after 30 s max.)*
+3. **Converts** the audio to **16 kHz mono** and **transcribes** it with the first available engine:
    1. **Local Whisper** (whisper.cpp) — fully offline, fast, private, accurate. *(if installed)*
    2. **ElevenLabs Scribe** — cloud, most accurate, needs an API key + internet.
    3. **Windows SAPI** — built-in offline fallback, zero setup, lower accuracy.
-4. The transcript is sent to the agent as a task instruction.
+4. Shows you exactly **what it heard** ("You said …") and runs it as a task.
 
-You can check which engine is active from the app (command `get_stt_status`).
+> Press-to-start + auto-stop-on-silence is far more reliable than hold-to-talk.
+> You can always type instead with **Ctrl+Shift+T**.
 
 ---
 

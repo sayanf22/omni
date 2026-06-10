@@ -19,6 +19,18 @@ static RECORDING: Mutex<Option<RecordingState>> = Mutex::new(None);
 static RECORDING_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 // Shared flag to signal the recording thread to stop
 static STOP_FLAG: Mutex<bool> = Mutex::new(false);
+// Whether a capture session is currently active (for hotkey toggle).
+static IS_RECORDING: Mutex<bool> = Mutex::new(false);
+
+/// Is a voice capture session currently active?
+pub fn is_recording() -> bool {
+    *IS_RECORDING.lock().unwrap()
+}
+
+/// Request the current capture to stop early (manual stop / second hotkey press).
+pub fn request_stop() {
+    if let Ok(mut f) = STOP_FLAG.lock() { *f = true; }
+}
 
 /// Start capturing audio from the default input device.
 /// Uses CPAL directly — no PowerShell, no MCI, fully cross-process-safe.
@@ -70,6 +82,7 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
             channels,
             is_recording: true,
         });
+        *IS_RECORDING.lock().unwrap() = true;
     }
 
     // Spawn recording thread
@@ -160,36 +173,59 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
 
         tracing::info!("Audio stream recording started");
 
-        // Poll until stop flag is set (max 60 seconds to prevent runaway).
-        // Each tick: compute RMS of newly-captured samples and emit it for the
-        // live waveform animation.
+        // Poll loop with LIVE LEVEL emission + AUTO-STOP ON SILENCE (WisperFlow-style).
+        // - Emits voice:level every ~60ms for the waveform.
+        // - Waits for speech to begin, then stops automatically after a short
+        //   trailing silence. Also stops on manual request or hard time caps.
         let start = std::time::Instant::now();
         let mut last_len = 0usize;
+        let mut speech_started = false;
+        let mut last_voice = std::time::Instant::now();
+        const SPEECH_ON: f32 = 0.06;     // level above this = speaking
+        const SPEECH_OFF: f32 = 0.04;    // below this = silence
+        const TRAILING_SILENCE_MS: u128 = 1200; // stop this long after speech ends
+        const NO_SPEECH_TIMEOUT_S: u64 = 6;      // give up if user never speaks
+        const MAX_RECORD_S: u64 = 30;            // hard cap
+
         loop {
             std::thread::sleep(std::time::Duration::from_millis(60));
 
-            // Emit current audio level (RMS of new samples since last tick)
+            let mut level = 0.0_f32;
             if let Ok(buf) = samples_clone.lock() {
                 let len = buf.len();
                 if len > last_len {
                     let slice = &buf[last_len..len];
                     let sum_sq: f32 = slice.iter().map(|s| s * s).sum();
-                    let rms = (sum_sq / slice.len() as f32).sqrt();
-                    // Scale to a lively 0..1 range (mic RMS is usually small)
-                    let level = (rms * 8.0).clamp(0.0, 1.0);
-                    let _ = app_for_levels.emit("voice:level", level);
+                    let rms = (sum_sq / slice.len().max(1) as f32).sqrt();
+                    level = (rms * 8.0).clamp(0.0, 1.0);
                     last_len = len;
-                } else {
-                    // No new audio = silence
-                    let _ = app_for_levels.emit("voice:level", 0.0_f32);
                 }
             }
+            let _ = app_for_levels.emit("voice:level", level);
 
-            let should_stop = STOP_FLAG.lock().map(|f| *f).unwrap_or(true);
-            if should_stop || start.elapsed().as_secs() > 60 {
+            let now = std::time::Instant::now();
+            if level >= SPEECH_ON {
+                speech_started = true;
+                last_voice = now;
+            } else if level >= SPEECH_OFF && speech_started {
+                last_voice = now; // borderline — still talking
+            }
+
+            let manual_stop = STOP_FLAG.lock().map(|f| *f).unwrap_or(true);
+            let trailing_silence = speech_started
+                && now.duration_since(last_voice).as_millis() >= TRAILING_SILENCE_MS;
+            let no_speech = !speech_started && start.elapsed().as_secs() >= NO_SPEECH_TIMEOUT_S;
+            let too_long = start.elapsed().as_secs() >= MAX_RECORD_S;
+
+            if manual_stop || trailing_silence || no_speech || too_long {
+                tracing::info!(
+                    "Recording stop: manual={} trailing_silence={} no_speech={} too_long={}",
+                    manual_stop, trailing_silence, no_speech, too_long
+                );
                 break;
             }
         }
+        let _ = app_for_levels.emit("voice:level", 0.0_f32);
 
         // Stream drops here, stopping capture
         drop(stream);
@@ -197,12 +233,50 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
             samples_clone.lock().map(|s| s.len()).unwrap_or(0));
 
         // Copy samples to global state
-        if let (Ok(captured), Ok(mut state)) = (samples_clone.lock(), RECORDING.lock()) {
-            if let Some(ref mut s) = *state {
-                s.samples = captured.clone();
-                s.is_recording = false;
+        let (captured_samples, cap_rate, cap_channels) = {
+            let captured = samples_clone.lock().map(|s| s.clone()).unwrap_or_default();
+            if let Ok(mut state) = RECORDING.lock() {
+                if let Some(ref mut s) = *state {
+                    s.samples = captured.clone();
+                    s.is_recording = false;
+                }
             }
-        }
+            (captured, sample_rate, channels)
+        };
+
+        // ── Self-complete: transcribe and emit the result ───────────────────
+        // Tell the UI we're transcribing, then run STT off-thread.
+        let _ = app_for_levels.emit("hotkey:mic_stop", serde_json::json!({}));
+        let app_tx = app_for_levels.clone();
+        tauri::async_runtime::spawn(async move {
+            // Reset recording flags now that capture is done.
+            *IS_RECORDING.lock().unwrap() = false;
+            *STOP_FLAG.lock().unwrap() = false;
+
+            if captured_samples.is_empty() {
+                let _ = app_tx.emit("task:failed", serde_json::json!({
+                    "error": "No audio captured. Check your microphone is connected and allowed."
+                }));
+                return;
+            }
+
+            match process_and_transcribe(captured_samples, cap_rate, cap_channels).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    tracing::info!("Voice transcript: '{}'", text.trim());
+                    let _ = app_tx.emit("voice:transcript", serde_json::json!({ "text": text.trim() }));
+                }
+                Ok(_) => {
+                    let _ = app_tx.emit("task:failed", serde_json::json!({
+                        "error": "Could not understand speech — nothing was recognized. Speak clearly and try again, or set up local Whisper / ElevenLabs (see docs/14_voice_setup.md)."
+                    }));
+                }
+                Err(e) => {
+                    let _ = app_tx.emit("task:failed", serde_json::json!({
+                        "error": format!("Transcription failed: {}", e)
+                    }));
+                }
+            }
+        });
     });
 
     let mut thread_handle = RECORDING_THREAD.lock().unwrap();
@@ -211,8 +285,46 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resample + write WAV + transcribe through the engine priority chain.
+/// Shared by the auto-stop recording path and the manual stop command.
+pub async fn process_and_transcribe(samples: Vec<f32>, sample_rate: u32, channels: u16) -> anyhow::Result<String> {
+    use tokio::time::{timeout, Duration};
+
+    // Convert to 16 kHz mono (required by Whisper; accepted by all engines).
+    let mono16k = downmix_and_resample_16k(&samples, sample_rate, channels);
+    let temp_path = std::env::temp_dir().join("omni_input.wav");
+    write_wav_file(&temp_path, &mono16k, 16_000, 1)?;
+
+    let result = if let Some(text) = try_local_whisper(&temp_path).await {
+        tracing::info!("Local Whisper STT: '{}'", text);
+        text
+    } else {
+        let key_opt = get_key("elevenlabs").ok().flatten()
+            .or_else(|| get_key("elevenlabs_api_key").ok().flatten());
+        if let Some(key) = key_opt.filter(|k| !k.is_empty() && !k.contains('•')) {
+            match timeout(Duration::from_secs(25), call_elevenlabs_stt(&temp_path, &key)).await {
+                Ok(Ok(text)) => text,
+                Ok(Err(e)) => { tracing::warn!("ElevenLabs failed ({}), SAPI fallback", e); sapi_with_timeout(&temp_path).await? }
+                Err(_) => { tracing::warn!("ElevenLabs timed out, SAPI fallback"); sapi_with_timeout(&temp_path).await? }
+            }
+        } else {
+            sapi_with_timeout(&temp_path).await?
+        }
+    };
+
+    let _ = std::fs::remove_file(&temp_path);
+    Ok(result)
+}
+
 /// Stop recording, write WAV, transcribe via ElevenLabs or SAPI fallback.
 pub async fn stop_mic_recording() -> anyhow::Result<String> {
+    // Signal the recording thread to stop. It transcribes + emits voice:transcript itself.
+    request_stop();
+    Ok(String::new())
+}
+
+#[allow(dead_code)]
+async fn _legacy_stop_unused() -> anyhow::Result<String> {
     // Signal recording thread to stop
     {
         let mut flag = STOP_FLAG.lock().unwrap();
