@@ -1,8 +1,6 @@
 /**
- * TextInputOverlay — floating quick-command bar (Spotlight / Raycast style)
- *
- * Triggered by Ctrl+Shift+T. A single clean rounded pill on a transparent window.
- * Type a command → Enter to run, Esc to close.
+ * TextInputOverlay — Spotlight-style floating command bar
+ * Ctrl+Shift+T to open · Enter to run · Esc always closes/stops
  */
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -16,7 +14,6 @@ export const TextInputOverlay: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Make the window background fully transparent so only the rounded card shows
   useEffect(() => {
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
@@ -25,9 +22,7 @@ export const TextInputOverlay: React.FC = () => {
   }, []);
 
   const hide = async () => {
-    setValue("");
-    setRunning(false);
-    setError(null);
+    setValue(""); setRunning(false); setError(null);
     try { await getCurrentWindow().hide(); } catch (_) {}
   };
 
@@ -36,6 +31,21 @@ export const TextInputOverlay: React.FC = () => {
     setRunning(false);
     await hide();
   };
+
+  // ── GLOBAL Esc handler — catches Esc at the document level no matter what ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (running) handleStop();
+        else hide();
+      }
+    };
+    // capture:true so we intercept before anything else
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [running]); // re-register when running changes so we call the right handler
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 80);
@@ -60,162 +70,112 @@ export const TextInputOverlay: React.FC = () => {
     e.preventDefault();
     const instruction = value.trim();
     if (!instruction || running) return;
-    setRunning(true);
-    setError(null);
+    setRunning(true); setError(null);
     try {
       invoke("run_task", { instruction, userId: "" });
     } catch (err: any) {
-      setError(err?.toString() || "Failed to start task");
-      setRunning(false);
+      setError(err?.toString() || "Failed"); setRunning(false);
     }
   };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      running ? handleStop() : hide();
-    }
-  };
-
-  // Border colour reflects state
-  const borderColor = error ? "#7f1d1d" : running ? "#3f3f46" : "#3f3f46";
 
   return (
-    <div
-      style={{
-        width: "100vw",
-        height: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "transparent",
-        padding: "8px",
-        boxSizing: "border-box",
-      }}
-    >
+    <div style={{
+      width: "100vw", height: "100vh",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "transparent", padding: "8px", boxSizing: "border-box",
+    }}>
       <form
         onSubmit={handleSubmit}
-        onKeyDown={handleKeyDown}
         style={{
           width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          background: "#161618",
-          border: `1px solid ${borderColor}`,
-          borderRadius: "16px",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+          display: "flex", flexDirection: "column",
+          background: "#141416",
+          border: `1px solid ${error ? "#7f1d1d" : "#2e2e34"}`,
+          borderRadius: "18px",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.75), 0 4px 20px rgba(0,0,0,0.4)",
           overflow: "hidden",
         }}
       >
-        {/* Main input row */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 16px" }}>
-          {/* Omni logo */}
-          <div
-            style={{
-              width: "26px", height: "26px", borderRadius: "8px",
-              background: running ? "#6366F1" : "#ffffff",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
+        {/* Input row */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "15px 18px" }}>
+          <div style={{
+            width: 28, height: 28, borderRadius: 9,
+            background: running ? "#6366F1" : "#fff",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            flexShrink: 0, transition: "background 0.2s",
+          }}>
             {running
-              ? <Loader2 style={{ width: 14, height: 14, color: "#fff", animation: "omspin 0.9s linear infinite" }} />
-              : <span style={{ color: "#09090B", fontSize: "12px", fontWeight: 900 }}>Ω</span>
+              ? <Loader2 style={{ width: 14, height: 14, color: "#fff", animation: "omspin 0.85s linear infinite" }} />
+              : <span style={{ color: "#09090B", fontSize: "13px", fontWeight: 900 }}>Ω</span>
             }
           </div>
 
-          {/* Input */}
           <input
             ref={inputRef}
             type="text"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={running ? "Working on your task…" : "Type a command, e.g. open Notepad and write Hello"}
+            placeholder={running ? "Running task…" : "Type a command and press Enter…"}
             disabled={running}
             autoComplete="off"
             spellCheck={false}
             style={{
-              flex: 1,
-              minWidth: 0,
-              background: "transparent",
-              border: "none",
-              outline: "none",
-              color: "#fafafa",
-              fontSize: "15px",
-              fontWeight: 500,
+              flex: 1, minWidth: 0,
+              background: "transparent", border: "none", outline: "none",
+              color: "#f4f4f5", fontSize: "15px", fontWeight: 500,
+              caretColor: "#6366F1",
             }}
           />
 
-          {/* Action button */}
           {running ? (
-            <button
-              type="button"
-              onClick={handleStop}
-              style={{
-                display: "flex", alignItems: "center", gap: "5px",
-                padding: "6px 12px", background: "#EF4444", border: "none",
-                borderRadius: "9px", color: "#fff", fontSize: "12px", fontWeight: 700,
-                cursor: "pointer", flexShrink: 0,
-              }}
-              title="Stop task (Esc)"
-            >
-              <Square style={{ width: 11, height: 11, fill: "#fff" }} /> Stop
+            <button type="button" onClick={handleStop} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "6px 14px", background: "#ef4444", border: "none",
+              borderRadius: 10, color: "#fff", fontSize: 12, fontWeight: 700,
+              cursor: "pointer", flexShrink: 0,
+            }}>
+              <Square style={{ width: 10, height: 10, fill: "#fff" }} /> Stop
             </button>
           ) : value ? (
-            <button
-              type="submit"
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                padding: "7px", background: "#ffffff", border: "none",
-                borderRadius: "9px", cursor: "pointer", flexShrink: 0,
-              }}
-              title="Run (Enter)"
-            >
-              <Send style={{ width: 15, height: 15, color: "#09090B" }} />
+            <button type="submit" style={{
+              padding: "7px 8px", background: "#fff", border: "none",
+              borderRadius: 10, cursor: "pointer", flexShrink: 0,
+              display: "flex", alignItems: "center",
+            }}>
+              <Send style={{ width: 14, height: 14, color: "#09090B" }} />
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={hide}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                padding: "6px", background: "transparent", border: "none",
-                color: "#71717A", cursor: "pointer", flexShrink: 0, borderRadius: "8px",
-              }}
-              title="Close (Esc)"
-            >
-              <X style={{ width: 18, height: 18 }} />
+            <button type="button" onClick={hide} style={{
+              padding: 6, background: "transparent", border: "none",
+              color: "#52525B", cursor: "pointer", flexShrink: 0,
+              borderRadius: 8, display: "flex", alignItems: "center",
+            }} title="Close (Esc)">
+              <X style={{ width: 17, height: 17 }} />
             </button>
           )}
         </div>
 
-        {/* Slim footer hint / error — always inside the rounded card */}
-        <div
-          style={{
-            padding: "7px 16px",
-            background: "#0e0e10",
-            borderTop: "1px solid #232327",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "10px",
-          }}
-        >
-          <span style={{ color: error ? "#f87171" : "#52525B", fontSize: "11px", fontWeight: error ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {error
-              ? error
-              : running
-              ? "Executing on your PC — press Esc or Stop to cancel"
-              : "Enter to run  •  Esc to close  •  Ctrl+Shift+A for voice"}
+        {/* Footer */}
+        <div style={{
+          padding: "7px 18px",
+          background: "#0d0d0f",
+          borderTop: "1px solid #1e1e22",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <span style={{
+            color: error ? "#f87171" : "#3f3f46",
+            fontSize: 11, fontWeight: error ? 600 : 400,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {error ? error : running ? "Press Esc to stop" : "Enter to run  ·  Esc to close"}
           </span>
-          <span style={{ color: "#3f3f46", fontSize: "10px", fontWeight: 700, flexShrink: 0, fontFamily: "monospace" }}>
-            OMNI
-          </span>
+          <kbd style={{ color: "#2e2e36", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>ESC</kbd>
         </div>
       </form>
-
-      <style>{`@keyframes omspin { to { transform: rotate(360deg); } }
-        input::placeholder { color: #52525B; }`}</style>
+      <style>{`
+        @keyframes omspin { to { transform: rotate(360deg); } }
+        input::placeholder { color: #3f3f46 !important; }
+      `}</style>
     </div>
   );
 };
