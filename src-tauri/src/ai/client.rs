@@ -140,11 +140,24 @@ async fn send_openai_compatible_request(
 
     let body_messages = build_messages_openai(messages, screenshot_base64);
 
-    let payload = json!({
-        "model": model.model_name,
-        "messages": body_messages,
-        "max_tokens": 2048
-    });
+    // Reasoning models (o-series, deepseek-reasoner, etc.) reject a custom
+    // temperature and need room to "think", so only tune speed knobs for normal
+    // chat models. Normal models: lower max_tokens + low temperature = faster.
+    let reasoning = model_is_reasoning(model);
+    let payload = if reasoning {
+        json!({
+            "model": model.model_name,
+            "messages": body_messages,
+            "max_tokens": 2048
+        })
+    } else {
+        json!({
+            "model": model.model_name,
+            "messages": body_messages,
+            "max_tokens": 1024,
+            "temperature": 0.2
+        })
+    };
 
     let mut request = client
         .post(&url)
@@ -213,11 +226,20 @@ async fn send_anthropic_request(
         }
     }
 
-    let mut payload = json!({
-        "model": model.model_name,
-        "max_tokens": 2048,
-        "messages": body_messages
-    });
+    let mut payload = if model_is_reasoning(model) {
+        json!({
+            "model": model.model_name,
+            "max_tokens": 2048,
+            "messages": body_messages
+        })
+    } else {
+        json!({
+            "model": model.model_name,
+            "max_tokens": 1024,
+            "temperature": 0.2,
+            "messages": body_messages
+        })
+    };
     if let Some(sys) = system_prompt {
         payload.as_object_mut().unwrap().insert("system".to_string(), json!(sys));
     }
