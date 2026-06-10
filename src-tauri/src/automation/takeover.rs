@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WH_KEYBOARD_LL, WH_MOUSE_LL, LLKHF_INJECTED, LLMHF_INJECTED,
     WM_KEYDOWN, WM_SYSKEYDOWN, WM_QUIT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 
 static BLOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -63,6 +64,16 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 } else {
                     *last = Some(now);
                 }
+            }
+
+            // Let the agent-control hotkeys (Ctrl+Shift+*) pass through even while
+            // blocking, so the user can interrupt and ADD a spoken instruction
+            // mid-task (e.g. Ctrl+Shift+A). Without this, the low-level hook would
+            // swallow the combo and the global shortcut would never fire.
+            let ctrl_down = (GetAsyncKeyState(0x11) as u16 & 0x8000) != 0; // VK_CONTROL
+            let shift_down = (GetAsyncKeyState(0x10) as u16 & 0x8000) != 0; // VK_SHIFT
+            if ctrl_down && shift_down {
+                return CallNextHookEx(HHOOK::default(), code, wparam, lparam);
             }
 
             // While blocking, swallow ALL physical input.

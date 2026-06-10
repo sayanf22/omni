@@ -170,6 +170,41 @@ fn get_cancel_notify() -> &'static Arc<Notify> {
     NOTIFY.get_or_init(|| Arc::new(Notify::new()))
 }
 
+/// Public handle to the cancel notifier so other modules (e.g. the permission
+/// gate) can abort their waits the instant the user cancels — no more freezing.
+pub fn cancel_notify_handle() -> Arc<Notify> {
+    get_cancel_notify().clone()
+}
+
+/// True if the user has requested cancellation of the current task.
+pub fn is_cancelled() -> bool {
+    get_cancel_flag().load(Ordering::SeqCst)
+}
+
+/// Whether an agent task is currently executing.
+fn get_agent_running() -> &'static AtomicBool {
+    static RUNNING: OnceLock<AtomicBool> = OnceLock::new();
+    RUNNING.get_or_init(|| AtomicBool::new(false))
+}
+
+/// Is an agent task currently running?
+pub fn is_task_running() -> bool {
+    get_agent_running().load(Ordering::SeqCst)
+}
+
+/// Queue of instructions the user added MID-TASK (e.g. via Ctrl+Shift+A). The
+/// running ReAct loop drains these and folds them into the conversation so the
+/// agent follows the new guidance WITHOUT restarting the task.
+fn get_injected() -> &'static std::sync::Mutex<Vec<String>> {
+    static INJECTED: OnceLock<std::sync::Mutex<Vec<String>>> = OnceLock::new();
+    INJECTED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Add a mid-task instruction to the running task's queue.
+pub fn inject_message(msg: String) {
+    if let Ok(mut v) = get_injected().lock() { v.push(msg); }
+}
+
 // ── Tauri Commands ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +224,30 @@ pub async fn run_task(
     user_id: String,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    // ── Mid-task interruption ────────────────────────────────────────────────
+    // If a task is ALREADY running, do NOT start a second one. Instead fold this
+    // new instruction into the running task so the agent follows it too. This is
+    // what lets the user press Ctrl+Shift+A mid-task and add/correct guidance.
+    if is_task_running() {
+        let note = instruction.trim().to_string();
+        if !note.is_empty() {
+            inject_message(note.clone());
+            // Make sure the overlay is visible so the user sees it was accepted.
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.show();
+                let _ = overlay.set_always_on_top(true);
+            }
+            let _ = app.emit("task:step", serde_json::json!({
+                "step_num": 0,
+                "thought": "Added your new instruction to the current task.",
+                "tool": null,
+                "description": format!("You added: {}", note),
+                "success": true
+            }));
+        }
+        return Ok("injected".to_string());
+    }
+
     // Reset cancel flag + notify any waiting selector
     get_cancel_flag().store(false, Ordering::SeqCst);
 
@@ -230,6 +289,10 @@ pub fn cancel_task() -> Result<(), String> {
 async fn execute_task(instruction: String, user_id: String, task_id: String, app: tauri::AppHandle) {
     let now = chrono::Utc::now().to_rfc3339();
 
+    // Mark the agent as running and clear any stale mid-task instructions.
+    get_agent_running().store(true, Ordering::SeqCst);
+    if let Ok(mut v) = get_injected().lock() { v.clear(); }
+
     // Save initial task record
     let initial_task = Task {
         id: task_id.clone(),
@@ -241,6 +304,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         synced_at: None,
     };
     if let Err(e) = save_task(&initial_task) {
+        get_agent_running().store(false, Ordering::SeqCst);
         let _ = app.emit("task:failed", serde_json::json!({
             "task_id": task_id,
             "error": format!("DB error: {}", e)
@@ -640,6 +704,34 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             final_outcome = "Task cancelled by user.".to_string();
             let _ = app.emit("agent:killed", serde_json::json!({}));
             break;
+        }
+
+        // ── Fold in any mid-task instructions the user added (Ctrl+Shift+A) ──
+        // The user can speak a correction/addition while the agent works; we add
+        // it to the conversation so the agent follows it WITHOUT restarting.
+        {
+            let drained: Vec<String> = get_injected()
+                .lock()
+                .map(|mut v| std::mem::take(&mut *v))
+                .unwrap_or_default();
+            for note in drained {
+                let note = note.trim().to_string();
+                if note.is_empty() { continue; }
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: format!(
+                        "[NEW INSTRUCTION FROM THE USER — fold this into the CURRENT task, do not restart]: {}",
+                        note
+                    ),
+                });
+                let _ = app.emit("task:step", serde_json::json!({
+                    "step_num": step_num,
+                    "thought": "Incorporating your new instruction.",
+                    "tool": null,
+                    "description": note,
+                    "success": true
+                }));
+            }
         }
 
         // ── Take screenshot (only if model supports vision) ─────────────────
@@ -1077,4 +1169,9 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         }
     }
     // failed events emitted inline
+
+    // Task fully finished — clear running state so the next command starts fresh
+    // (and stale mid-task instructions don't leak into a future task).
+    get_agent_running().store(false, Ordering::SeqCst);
+    if let Ok(mut v) = get_injected().lock() { v.clear(); }
 }

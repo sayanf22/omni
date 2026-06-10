@@ -52,6 +52,13 @@ impl PermissionGate {
             let _ = overlay.set_focus();
         }
 
+        // If cancellation was already requested, don't even wait.
+        if crate::agent::planner::is_cancelled() {
+            let mut lock = self.pending.lock().await;
+            lock.remove(&request.id);
+            return false;
+        }
+
         // Broadcast to ALL windows (main + overlay)
         if let Err(e) = app.emit("permission:request", &request) {
             eprintln!("Failed to emit permission request: {:?}", e);
@@ -61,9 +68,16 @@ impl PermissionGate {
         }
 
         // Await the user response with a 60-second timeout
+        let cancel_notify = crate::agent::planner::cancel_notify_handle();
         tokio::select! {
             res = rx => {
                 res.unwrap_or(false)
+            }
+            _ = cancel_notify.notified() => {
+                // User cancelled (Esc×2 / Stop) — abort instantly, never freeze.
+                let mut lock = self.pending.lock().await;
+                lock.remove(&request.id);
+                false
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
                 let mut lock = self.pending.lock().await;
@@ -102,6 +116,13 @@ impl PermissionGate {
             let _ = overlay.set_focus();
         }
 
+        // If cancellation was already requested, don't even wait.
+        if crate::agent::planner::is_cancelled() {
+            let mut lock = self.pending_answers.lock().await;
+            lock.remove(&id);
+            return None;
+        }
+
         // Broadcast the question to ALL windows
         if let Err(e) = app.emit("question:request", serde_json::json!({
             "id": id, "question": question
@@ -113,8 +134,16 @@ impl PermissionGate {
         }
 
         // Await the typed answer with a generous 5-minute timeout
+        let cancel_notify = crate::agent::planner::cancel_notify_handle();
         tokio::select! {
             res = rx => res.ok().filter(|s| !s.is_empty()),
+            _ = cancel_notify.notified() => {
+                // User cancelled (Esc×2 / Stop) — abort the wait instantly so the
+                // task never freezes parked on an unanswerable question.
+                let mut lock = self.pending_answers.lock().await;
+                lock.remove(&id);
+                None
+            }
             _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
                 let mut lock = self.pending_answers.lock().await;
                 lock.remove(&id);

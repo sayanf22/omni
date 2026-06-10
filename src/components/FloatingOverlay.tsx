@@ -58,7 +58,7 @@ const setWindowHeight = async (h: number) => {
     const inner = await win().innerSize();
     // Clamp to a sane visible range so the window can never collapse to nothing.
     const clamped = Math.max(56, Math.min(620, Math.round(h)));
-    await win().setSize({ type: "Logical", width: inner.width || 340, height: clamped } as any);
+    await win().setSize({ type: "Logical", width: inner.width || 360, height: clamped } as any);
   } catch (_) {}
 };
 
@@ -94,7 +94,7 @@ const glassCard: React.CSSProperties = {
 };
 
 const glassInner: React.CSSProperties = {
-  background: "rgba(10,10,14,0.72)",
+  background: "rgba(16,16,22,0.97)",
 };
 
 // ── Live audio waveform (WisperFlow-style) ────────────────────────────────────
@@ -146,6 +146,18 @@ export const FloatingOverlay: React.FC = () => {
   const [controlling, setControlling] = useState(false); // agent has taken over input
   const cardRef = useRef<HTMLDivElement>(null);
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Paint THIS window's document solid dark. The overlay window is opaque
+  // (transparent WebView2 windows fail to composite reliably on Windows, which
+  // is why the floating panel wasn't showing on the PC). Each Tauri window has
+  // its own document, so this only affects the overlay — not the main dashboard.
+  useEffect(() => {
+    document.documentElement.style.background = "#0a0a0f";
+    document.documentElement.style.margin = "0";
+    document.body.style.background = "#0a0a0f";
+    document.body.style.margin = "0";
+    document.body.style.overflow = "hidden";
+  }, []);
 
   // Sync window height to card content height
   const syncHeight = useCallback(() => {
@@ -354,7 +366,7 @@ export const FloatingOverlay: React.FC = () => {
   const cfg = stateConfig[state as keyof typeof stateConfig] ?? stateConfig.thinking;
 
   return (
-    <div ref={cardRef} style={{ padding: "6px 6px 6px 6px", boxSizing: "border-box" }}>
+    <div ref={cardRef} style={{ padding: "6px", boxSizing: "border-box", background: "#0a0a0f", borderRadius: 22 }}>
       <motion.div
         initial={{ opacity: 0, scale: 0.94, y: -6 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
