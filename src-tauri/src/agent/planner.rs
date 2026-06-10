@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use crate::tools::{get_all_tools, RiskLevel};
@@ -12,9 +12,19 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 /// Maximum ReAct steps before the agent gives up.
-const MAX_STEPS: u32 = 20;
+/// High default so the agent can complete long, multi-stage tasks (the user may
+/// give it work that runs for a long session). Overridable by the `max_steps`
+/// setting. A hard ceiling still prevents a true runaway loop.
+const DEFAULT_MAX_STEPS: u32 = 120;
+const HARD_MAX_STEPS: u32 = 1000;
 
-fn max_steps_const() -> u32 { MAX_STEPS }
+fn max_steps_const() -> u32 {
+    crate::storage::sqlite::get_setting_internal("max_steps")
+        .ok().flatten()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|v| v.clamp(10, HARD_MAX_STEPS))
+        .unwrap_or(DEFAULT_MAX_STEPS)
+}
 
 /// Trims the conversation to keep LLM calls fast in long tasks.
 /// Always keeps message[0] (system prompt) and message[1] (original task),
@@ -243,6 +253,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         "instruction": instruction.clone()
     }));
 
+    // Show the top-right overlay so the user always sees what the agent is doing,
+    // even when the main dashboard is closed or hidden.
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.show();
+    }
+
     // Determine task type + check vision availability
     let task_type = detect_task_type(&instruction);
     let tools = get_all_tools();
@@ -321,6 +337,14 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
          6. ASK BEFORE DESTRUCTIVE ACTIONS.\n\
             Any action that sends, posts, deletes, purchases, or is irreversible:\n\
             output {{\"question\":\"Confirm: <exact action>?\"}} and wait for user approval.\n\
+            Think about CONSEQUENCES first — deleting files, sending a message/email/post,\n\
+            making a payment, closing unsaved work. When unsure, ASK rather than guess.\n\
+         6b. SELF-CORRECT — observe, then act (do not repeat blindly).\n\
+            Before re-doing an action, READ the screen (ocr/find_text/screenshot) to see what\n\
+            actually happened. If you already typed text, do NOT type it again — verify it landed.\n\
+            If a click did nothing, the element may have moved or a different window is focused —\n\
+            re-locate it with find_text and adjust, don't repeat the identical click.\n\
+            Each step should be based on the CURRENT screen state, not assumptions.\n\
          7. ANSWER WITH REAL DATA.\n\
             If the user asks 'read X and tell me' - gather info with tools, put the ACTUAL content\n\
             in the result field. Do not say 'task complete' without the answer.\n\
@@ -535,13 +559,17 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     ];
 
     let mut step_num = 1u32;
-    let max_steps = MAX_STEPS;
+    let max_steps = max_steps_const();
     let mut steps_log: Vec<StepProgress> = Vec::new();
     // Track whether the agent actually typed/clicked — used to catch premature "done".
     let mut did_type_text = false;
     let mut did_interact = false;
     // Allow exactly one premature-done pushback so we never loop forever.
     let mut premature_done_pushed = false;
+    // Anti-repeat: remember the last tool+params signature to stop the agent
+    // from doing the exact same action (e.g. typing the same text twice).
+    let mut last_action_sig: Option<String> = None;
+    let mut repeat_count: u32 = 0;
     let mut final_outcome = String::from("Task completed.");
     let mut final_status = String::from("completed");
 
@@ -773,6 +801,39 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         let thought = parsed["thought"].as_str().unwrap_or("Executing step.").to_string();
 
         if let Some(name) = tool_name {
+            // ── Anti-repeat / self-correction guard ──────────────────────────
+            // If the agent tries the EXACT same action as last time, it's likely
+            // stuck or about to duplicate (e.g. type the same text twice). After
+            // 2 identical attempts, force it to observe the screen and rethink.
+            let action_sig = format!("{}::{}", name, tool_params);
+            if last_action_sig.as_deref() == Some(action_sig.as_str()) {
+                repeat_count += 1;
+            } else {
+                repeat_count = 0;
+                last_action_sig = Some(action_sig.clone());
+            }
+            if repeat_count >= 2 {
+                repeat_count = 0;
+                last_action_sig = None;
+                let _ = app.emit("task:step", serde_json::json!({
+                    "step_num": step_num,
+                    "thought": "Avoiding a repeated action — re-checking the screen.",
+                    "tool": null,
+                    "description": "Detected the same action repeating; reading the screen to self-correct.",
+                    "success": false
+                }));
+                messages.push(ChatMessage { role: "assistant".to_string(), content: ai_response });
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: "You just tried the SAME action multiple times. It is not working as expected. \
+                        STOP repeating it. First use 'screen' (ocr or find_text) to OBSERVE the current state, \
+                        understand what actually happened (did the text already get typed? is a different window focused?), \
+                        then choose a DIFFERENT next step. Do not type the same text again if it was already entered.".to_string(),
+                });
+                step_num += 1;
+                continue 'main;
+            }
+
             if let Some(tool) = tools.get(name) {
                 let risk = tool.risk_level(&tool_params);
 

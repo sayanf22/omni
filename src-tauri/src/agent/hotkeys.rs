@@ -234,15 +234,18 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
         let _ = app.emit("hotkey:text_mode", serde_json::json!({}));
 
     } else if shortcut == esc_shortcut && state == ShortcutState::Pressed {
-        // ── Esc × 2 kill switch ───────────────────────────────────────────────
+        // ── Esc × 2 kill switch — instantly hand control back to the user ─────
         let mut last_press = LAST_ESC_PRESS.lock().unwrap();
         let now = Instant::now();
         if let Some(last) = *last_press {
             if now.duration_since(last) < Duration::from_millis(500) {
+                // Release any input block IMMEDIATELY so the user regains control,
+                // then cancel the running task.
+                crate::automation::process::set_user_input_blocked(false);
                 let _ = cancel_task();
                 let _ = app.emit("agent:killed", serde_json::json!({}));
                 *last_press = None;
-                tracing::info!("Kill switch triggered (Esc×2)");
+                tracing::info!("Kill switch triggered (Esc×2) — input released, task cancelled");
                 return;
             }
         }
