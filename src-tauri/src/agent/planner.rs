@@ -1038,10 +1038,31 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         let _ = crate::ai::memory::add_mem0_memory(&instruction, &final_outcome, &user_id).await;
         let _ = app.emit("task:done", serde_json::json!({
             "task_id": task_id,
-            "result": final_outcome
+            "result": final_outcome.clone()
         }));
+
+        // ── Speak the result aloud (local Windows TTS by default) ───────────
+        // "Tell me what you did" — the agent reports its result by voice.
+        // Gated by the speak_results setting (default ON).
+        let speak = crate::storage::sqlite::get_setting_internal("speak_results")
+            .ok().flatten().map(|v| v != "false").unwrap_or(true);
+        if speak && !final_outcome.trim().is_empty() {
+            let to_say = final_outcome.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::voice::tts::speak_text(&to_say).await;
+            });
+        }
     } else if final_status == "cancelled" {
         // agent:killed already emitted above
+    } else if final_status == "failed" {
+        // Briefly speak that it couldn't finish (also gated by the setting).
+        let speak = crate::storage::sqlite::get_setting_internal("speak_results")
+            .ok().flatten().map(|v| v != "false").unwrap_or(true);
+        if speak {
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::voice::tts::speak_text("I couldn't finish that task.").await;
+            });
+        }
     }
     // failed events emitted inline
 }

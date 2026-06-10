@@ -79,3 +79,17 @@ It works with zero setup but is the least accurate — fine for simple commands.
 - **Just want it to work right now** → SAPI (automatic, nothing to do).
 
 > Tip: You can also always type commands instead of speaking — press **Ctrl+Shift+T**.
+
+---
+
+## Spoken results (the agent tells you what it did) — LOCAL, no setup
+
+After finishing a task, Omni **speaks the result aloud** using Windows' built-in
+text-to-speech (System.Speech) — fully offline, no API key, no internet.
+
+- Works out of the box (`tts_engine` = `local`, the default).
+- Toggle off with the setting `speak_results` = `false`.
+- For higher-quality cloud voice, set `tts_engine` = `cloud` and add an ElevenLabs key.
+
+So a full voice loop is now local end-to-end:
+**press hotkey → speak → (local Whisper transcribes) → agent acts → agent speaks the result back.**
