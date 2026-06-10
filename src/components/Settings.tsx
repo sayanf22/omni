@@ -55,6 +55,21 @@ interface ModelFormProps {
   testModelFn: (p: string, m: string, u: string | null, k: string) => Promise<string>;
 }
 
+// Capability checklist icon (pending / spinner / check / cross)
+const CapIcon: React.FC<{ state: null | "testing" | "yes" | "no" | "skip" }> = ({ state }) => {
+  if (state === "testing") return <Loader2 className="w-4 h-4 text-accent animate-spin shrink-0" />;
+  if (state === "yes")     return <span className="w-4 h-4 rounded-full bg-success/20 border border-success/40 flex items-center justify-center shrink-0"><span className="text-success text-[10px] font-black">✓</span></span>;
+  if (state === "no")      return <span className="w-4 h-4 rounded-full bg-surface3 border border-border flex items-center justify-center shrink-0"><span className="text-text-muted text-[10px] font-black">–</span></span>;
+  return <span className="w-4 h-4 rounded-full border border-dashed border-border shrink-0" />;
+};
+
+const CapBadge: React.FC<{ state: null | "testing" | "yes" | "no" | "skip" }> = ({ state }) => {
+  if (state === "testing") return <span className="text-[10px] font-bold text-accent">testing…</span>;
+  if (state === "yes")     return <span className="text-[10px] font-bold uppercase text-success px-1.5 py-0.5 rounded bg-success/10 border border-success/20">Supported</span>;
+  if (state === "no")      return <span className="text-[10px] font-bold uppercase text-text-muted px-1.5 py-0.5 rounded bg-surface3 border border-border">Not available</span>;
+  return <span className="text-[10px] text-text-muted">pending</span>;
+};
+
 const PROVIDER_DEFAULTS: Record<string, { displayName: string; modelName: string; baseUrl: string; visionExpected: boolean }> = {
   openai:     { displayName: "OpenAI GPT-4o mini",    modelName: "gpt-4o-mini",              baseUrl: "", visionExpected: true  },
   anthropic:  { displayName: "Anthropic Claude",       modelName: "claude-3-5-sonnet-latest", baseUrl: "", visionExpected: true  },
@@ -76,20 +91,26 @@ const ModelForm: React.FC<ModelFormProps> = ({
   const [roleCoding, setRoleCoding]   = useState(editModel?.role_coding ?? false);
   const [roleWriting, setRoleWriting] = useState(editModel?.role_writing ?? false);
 
-  // Test state
-  const [testing, setTesting] = useState(false);
-  const [testPassed, setTestPassed] = useState<boolean | null>(isEdit ? true : null);
-  const [testMsg, setTestMsg] = useState(isEdit ? "Previously tested ✓" : "");
-  const [probingVision, setProbingVision] = useState(false);
-  const [visionResult, setVisionResult]   = useState<boolean | null>(isEdit ? editModel.role_vision : null);
+  // Capability detection state — each: null | "testing" | "yes" | "no" | "skip"
+  type CapState = null | "testing" | "yes" | "no" | "skip";
+  const [capText, setCapText]     = useState<CapState>(isEdit ? "yes" : null);
+  const [capVision, setCapVision] = useState<CapState>(isEdit ? (editModel.role_vision ? "yes" : "no") : null);
+  const [capAudio, setCapAudio]   = useState<CapState>(null);
+  const [capVideo, setCapVideo]   = useState<CapState>(null);
+  const [testing, setTesting]     = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [hasTested, setHasTested] = useState(isEdit);
 
   const [saving, setSaving] = useState(false);
 
+  const resetCaps = () => {
+    setCapText(null); setCapVision(null); setCapAudio(null); setCapVideo(null);
+    setTestError(null); setHasTested(false);
+  };
+
   const handleProviderChange = (p: string) => {
     setProvider(p);
-    setTestPassed(null);
-    setTestMsg("");
-    setVisionResult(null);
+    resetCaps();
     const d = PROVIDER_DEFAULTS[p];
     if (d && !isEdit) {
       setDisplayName(d.displayName);
@@ -98,77 +119,82 @@ const ModelForm: React.FC<ModelFormProps> = ({
     }
   };
 
+  // Sequential capability test: text → vision → audio → video
   const handleTest = async () => {
-    // Resolve the actual key to test with:
-    // - If the user typed a new key (not masked), use it.
-    // - If editing and key is still masked, fetch the real key from the keychain.
+    // Resolve key (typed, or stored from keychain when editing)
     let keyToUse = apiKey.includes("•") ? "" : apiKey;
-
     if (!keyToUse && isEdit && editModel) {
       try {
         const storedKey = await invoke<string | null>("get_api_key", { name: editModel.id });
         if (storedKey) keyToUse = storedKey;
-      } catch (e) {
-        console.warn("Could not load stored key:", e);
-      }
+      } catch (e) { console.warn("Could not load stored key:", e); }
     }
-
     if (!keyToUse) {
-      setTestMsg(isEdit
-        ? "Could not load saved key — please re-enter your API key."
+      setTestError(isEdit
+        ? "Could not load saved key — please re-enter your API key in the field above."
         : "Enter your API key first.");
-      setTestPassed(false);
       return;
     }
 
     setTesting(true);
-    setTestPassed(null);
-    setTestMsg("Connecting to API…");
-    setVisionResult(null);
+    setTestError(null);
+    setHasTested(true);
+    setCapText("testing"); setCapVision(null); setCapAudio(null); setCapVideo(null);
 
+    const args = { providerType: provider, modelName, baseUrl: baseUrl || null, apiKey: keyToUse };
+
+    // 1️⃣ TEXT — basic connection
     try {
-      const result = await testModelFn(provider, modelName, baseUrl || null, keyToUse);
-      setTestPassed(true);
-      setTestMsg(`Connected ✓ — "${result}"`);
-
-      // Probe vision with the same resolved key
-      setProbingVision(true);
-      setTestMsg("Testing image support…");
-      try {
-        const hasVision = await invoke<boolean>("probe_model_vision", {
-          providerType: provider,
-          modelName,
-          baseUrl: baseUrl || null,
-          apiKey: keyToUse,
-        });
-        setVisionResult(hasVision);
-        setTestMsg(hasVision
-          ? "✓ Text, Code + Screen Vision confirmed"
-          : "✓ Text & Code confirmed — no image/vision support");
-      } catch {
-        setVisionResult(null);
-        setTestMsg("Connected ✓ (vision probe skipped)");
-      } finally {
-        setProbingVision(false);
-      }
+      await testModelFn(provider, modelName, baseUrl || null, keyToUse);
+      setCapText("yes");
+      // A working text model can do coding + writing — auto-enable those roles
+      setRoleCoding(true);
+      setRoleWriting(true);
     } catch (e: any) {
-      setTestPassed(false);
-      setTestMsg(typeof e === "string" ? e : e?.message || "Connection failed");
-    } finally {
+      setCapText("no");
+      setTestError(typeof e === "string" ? e : e?.message || "Connection failed. Check your API key and model ID.");
       setTesting(false);
+      return; // stop the chain — if text fails, nothing else will work
     }
+
+    // 2️⃣ VISION — image input
+    setCapVision("testing");
+    try {
+      const v = await invoke<boolean>("probe_model_vision", args);
+      setCapVision(v ? "yes" : "no");
+    } catch { setCapVision("no"); }
+
+    // 3️⃣ AUDIO — audio input
+    setCapAudio("testing");
+    try {
+      const a = await invoke<boolean>("probe_model_audio", args);
+      setCapAudio(a ? "yes" : "no");
+    } catch { setCapAudio("no"); }
+
+    // 4️⃣ VIDEO — video input
+    setCapVideo("testing");
+    try {
+      const vid = await invoke<boolean>("probe_model_video", args);
+      setCapVideo(vid ? "yes" : "no");
+    } catch { setCapVideo("no"); }
+
+    setTesting(false);
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!testPassed && !isEdit) {
-      setTestMsg("Test connection first before saving.");
+    if (!hasTested && !isEdit) {
+      setTestError("Test the model first so we can detect its capabilities.");
+      return;
+    }
+    if (capText === "no") {
+      setTestError("This model failed the connection test — fix the key/model ID before saving.");
       return;
     }
 
     setSaving(true);
     const keyToSave = apiKey.includes("•") ? undefined : apiKey;
-    const finalVision = visionResult !== null ? visionResult : (editModel?.role_vision ?? false);
+    const finalVision = capVision === "yes" ? true : capVision === "no" ? false : (editModel?.role_vision ?? false);
 
     const modelData: Omit<CustomModel, "id"> = {
       provider_type: provider,
@@ -189,8 +215,7 @@ const ModelForm: React.FC<ModelFormProps> = ({
       }
       onSave();
     } catch (err: any) {
-      setTestMsg(`Save failed: ${err?.message || err}`);
-      setTestPassed(false);
+      setTestError(`Save failed: ${err?.message || err}`);
     } finally {
       setSaving(false);
     }
@@ -302,34 +327,50 @@ const ModelForm: React.FC<ModelFormProps> = ({
         />
       </div>
 
-      {/* Test button + result */}
+      {/* Test button + capability checklist */}
       <div className="space-y-2">
         <button
           type="button"
           onClick={handleTest}
-          disabled={testing || probingVision}
+          disabled={testing}
           className="flex items-center gap-2 px-4 py-2 bg-surface border border-border hover:border-border-light text-text text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
         >
-          {(testing || probingVision)
-            ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-accent" /> {probingVision ? "Testing vision…" : "Connecting…"}</>
-            : <><RefreshCw className="w-3.5 h-3.5" /> Test & Detect Capabilities</>
+          {testing
+            ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-accent" /> Testing capabilities…</>
+            : <><RefreshCw className="w-3.5 h-3.5" /> Test &amp; Detect Capabilities</>
           }
         </button>
 
-        {testMsg && (
-          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${
-            testPassed === false
-              ? "bg-error-dim/20 border border-error/25 text-error"
-              : testPassed === true && visionResult === true
-              ? "bg-success/10 border border-success/20 text-success"
-              : testPassed === true
-              ? "bg-accent-dim/20 border border-accent/25 text-text"
-              : "bg-surface3 border border-border text-text-secondary"
-          }`}>
-            {testPassed === true && visionResult === true && <Eye className="w-3.5 h-3.5 shrink-0" />}
-            {testPassed === true && visionResult === false && <EyeOff className="w-3.5 h-3.5 shrink-0" />}
-            {testPassed === false && <XCircle className="w-3.5 h-3.5 shrink-0" />}
-            <span>{testMsg}</span>
+        {/* Live capability checklist */}
+        {hasTested && (
+          <div className="bg-surface border border-border rounded-lg p-3 space-y-2">
+            <p className="text-[10px] font-bold text-text-secondary uppercase tracking-wider">
+              Detected Capabilities
+            </p>
+            {[
+              { key: "text",   label: "Text & Chat",      sub: "Basic reasoning, coding, writing", state: capText },
+              { key: "vision", label: "Screen Vision",    sub: "Can see screenshots / images",     state: capVision },
+              { key: "audio",  label: "Audio Input",      sub: "Accepts audio clips",              state: capAudio },
+              { key: "video",  label: "Video Input",      sub: "Accepts video clips",              state: capVideo },
+            ].map((cap) => (
+              <div key={cap.key} className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <CapIcon state={cap.state} />
+                  <div>
+                    <p className="text-xs font-semibold text-text">{cap.label}</p>
+                    <p className="text-[10px] text-text-muted">{cap.sub}</p>
+                  </div>
+                </div>
+                <CapBadge state={cap.state} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {testError && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-error-dim/20 border border-error/25 text-error">
+            <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span className="break-words">{testError}</span>
           </div>
         )}
       </div>
@@ -363,9 +404,9 @@ const ModelForm: React.FC<ModelFormProps> = ({
         </button>
         <button
           type="submit"
-          disabled={saving || (!testPassed && !isEdit)}
+          disabled={saving || (!hasTested && !isEdit) || capText === "no"}
           className="px-5 py-2 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg transition-colors disabled:opacity-40"
-          title={!testPassed && !isEdit ? "Test connection first" : ""}
+          title={(!hasTested && !isEdit) ? "Test the model first" : ""}
         >
           {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Saving…</> : (isEdit ? "Save Changes" : "Add Model")}
         </button>

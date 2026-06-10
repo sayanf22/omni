@@ -340,3 +340,170 @@ fn build_messages_openai(messages: Vec<ChatMessage>, screenshot_base64: Option<S
     out
 }
 
+
+// ── Modality probes (audio / video) ──────────────────────────────────────────
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+/// Resolve the chat-completions base URL for a provider.
+fn resolve_base_url(provider: &str, base_url: &Option<String>) -> String {
+    match provider {
+        "openai"     => "https://api.openai.com/v1".to_string(),
+        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
+        _            => base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+    }
+}
+
+/// Builds a minimal valid silent WAV file (44-byte header, no samples), base64-encoded.
+fn minimal_wav_base64() -> String {
+    let mut wav: Vec<u8> = Vec::with_capacity(44);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&36u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());     // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes());     // mono
+    wav.extend_from_slice(&8000u32.to_le_bytes());  // sample rate
+    wav.extend_from_slice(&8000u32.to_le_bytes());  // byte rate
+    wav.extend_from_slice(&1u16.to_le_bytes());     // block align
+    wav.extend_from_slice(&8u16.to_le_bytes());     // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&0u32.to_le_bytes());     // 0 data bytes
+    STANDARD.encode(&wav)
+}
+
+/// Interprets a probe HTTP result for a given modality keyword.
+/// Returns true if the modality is supported.
+///   - 200            => supported
+///   - 401/403        => auth error, cannot determine -> false
+///   - error mentions the modality / "unsupported" / "not support" => NOT supported
+///   - error mentions "invalid"/"format"/"decode"/"corrupt"/"size" => the model TRIED
+///       to process the media (so it accepts the modality) => supported
+fn interpret_modality_response(status: u16, body: &str, modality: &str) -> bool {
+    if status == 200 { return true; }
+    if status == 401 || status == 403 { return false; }
+
+    let b = body.to_lowercase();
+
+    // Explicit "not supported" signals → modality unavailable
+    let unsupported = b.contains(&format!("does not support {}", modality))
+        || b.contains(&format!("not support {}", modality))
+        || b.contains(&format!("{} not supported", modality))
+        || b.contains(&format!("{}_url", modality))     // e.g. "video_url is not a valid content type"
+        || b.contains("unsupported")
+        || b.contains("not a valid content")
+        || b.contains("invalid content type")
+        || b.contains("unknown variant")
+        || b.contains("modality");
+
+    // "Tried to decode" signals → modality accepted (model attempted processing)
+    let tried_to_process = b.contains("invalid")
+        || b.contains("decode")
+        || b.contains("corrupt")
+        || b.contains("format")
+        || b.contains("too small")
+        || b.contains("duration");
+
+    if unsupported && !tried_to_process {
+        false
+    } else {
+        tried_to_process
+    }
+}
+
+/// Probe whether the model accepts audio input (OpenAI input_audio content type).
+pub async fn test_audio_capability(
+    provider: &str, model_name: &str, base_url: &Option<String>, api_key: &str,
+) -> bool {
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+        Ok(c) => c, Err(_) => return false,
+    };
+    // Anthropic / DeepSeek don't support audio input in chat API
+    if provider == "anthropic" { return false; }
+
+    let url = format!("{}/chat/completions", resolve_base_url(provider, base_url).trim_end_matches('/'));
+    let payload = json!({
+        "model": model_name,
+        "max_tokens": 5,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Say OK."},
+                {"type": "input_audio", "input_audio": {"data": minimal_wav_base64(), "format": "wav"}}
+            ]
+        }]
+    });
+    let mut req = client.post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json");
+    if provider == "openrouter" {
+        req = req.header("HTTP-Referer", "https://github.com/sayanf22/omni").header("X-Title", "Omni");
+    }
+    match req.json(&payload).send().await {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            interpret_modality_response(status, &body, "audio")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Probe whether the model accepts video input (OpenRouter video_url content type).
+pub async fn test_video_capability(
+    provider: &str, model_name: &str, base_url: &Option<String>, api_key: &str,
+) -> bool {
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+        Ok(c) => c, Err(_) => return false,
+    };
+    // Only OpenRouter (and some custom gateways) expose video_url. OpenAI/DeepSeek/Anthropic don't.
+    if provider == "openai" || provider == "deepseek" || provider == "anthropic" { return false; }
+
+    let url = format!("{}/chat/completions", resolve_base_url(provider, base_url).trim_end_matches('/'));
+    // Tiny dummy mp4 data URL — non-video models reject the content type immediately;
+    // video models attempt to decode (and fail on format) which we treat as "supported".
+    let dummy_video = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
+    let payload = json!({
+        "model": model_name,
+        "max_tokens": 5,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Say OK."},
+                {"type": "video_url", "video_url": {"url": dummy_video}}
+            ]
+        }]
+    });
+    let mut req = client.post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json");
+    if provider == "openrouter" {
+        req = req.header("HTTP-Referer", "https://github.com/sayanf22/omni").header("X-Title", "Omni");
+    }
+    match req.json(&payload).send().await {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            interpret_modality_response(status, &body, "video")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Tauri command — probe audio input support.
+#[tauri::command]
+pub async fn probe_model_audio(
+    provider_type: String, model_name: String, base_url: Option<String>, api_key: String,
+) -> Result<bool, String> {
+    Ok(test_audio_capability(&provider_type.to_lowercase(), &model_name, &base_url, &api_key).await)
+}
+
+/// Tauri command — probe video input support.
+#[tauri::command]
+pub async fn probe_model_video(
+    provider_type: String, model_name: String, base_url: Option<String>, api_key: String,
+) -> Result<bool, String> {
+    Ok(test_video_capability(&provider_type.to_lowercase(), &model_name, &base_url, &api_key).await)
+}
