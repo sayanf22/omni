@@ -313,6 +313,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             a) Try an alternative approach (different click, keyboard shortcut).\n\
             b) If loading - wait and retry once.\n\
             c) Never repeat the exact same failed action more than twice - find a new path.\n\
+            d) IF A WINDOW IS NOT IN FRONT / NOT VISIBLE / MINIMIZED: do NOT stop the task.\n\
+               Use 'app focus' or 'app maximize' with the app name to bring it forward and\n\
+               maximize it, then continue. The CURRENT SYSTEM STATE list shows what is open.\n\
+               If the right app isn't open at all, open it. NEVER abandon the task just because\n\
+               a window wasn't focused — recover and keep going.\n\
          6. ASK BEFORE DESTRUCTIVE ACTIONS.\n\
             Any action that sends, posts, deletes, purchases, or is irreversible:\n\
             output {{\"question\":\"Confirm: <exact action>?\"}} and wait for user approval.\n\
@@ -797,11 +802,24 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                     break 'main;
                 }
 
+                // ── Takeover: block physical user input during the actual
+                // mouse/keyboard action so the user can't interfere with the
+                // agent's clicks/typing. Unblocked immediately after, so between
+                // steps the user can still hit Stop or the Esc kill-switch.
+                let block_for_action = matches!(name, "mouse" | "keyboard");
+                if block_for_action {
+                    crate::automation::process::set_user_input_blocked(true);
+                }
+
                 // Execute tool
                 let (outcome_text, success) = match tool.execute(tool_params.clone()).await {
                     Ok(out) => (out, true),
                     Err(e) => (format!("Tool '{}' failed: {}", name, e), false),
                 };
+
+                if block_for_action {
+                    crate::automation::process::set_user_input_blocked(false);
+                }
 
                 // ── Track real interactions (for the premature-done guard) ──────
                 if success {
@@ -885,6 +903,10 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
         step_num += 1;
     }
+
+    // Safety: always release any input block when the task loop ends, no matter
+    // which exit path was taken (done / failed / cancelled / max steps).
+    crate::automation::process::set_user_input_blocked(false);
 
     // Max steps exceeded
     if step_num > max_steps && final_status == "completed" {

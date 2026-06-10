@@ -18,9 +18,10 @@ impl Tool for AppTool {
 
     fn description(&self) -> &str {
         "Manage Windows applications. Actions:\n\
-         • open — launch an application by name (e.g. 'chrome', 'notepad', 'msedge', 'explorer').\n\
-         • open_url — open a URL directly in the default browser (provide 'url' param). FASTEST way to open a website.\n\
-         • focus — bring an existing window to the foreground by title fragment.\n\
+         • open — launch an app by name (e.g. 'whatsapp', 'chrome', 'notepad'). Auto-maximizes it. If already running, focuses+maximizes it.\n\
+         • open_url — open a URL directly in the default browser. FASTEST way to open a website.\n\
+         • focus — bring an existing window to the front AND maximize it by title fragment.\n\
+         • maximize — same as focus: bring a window to front and maximize it (use if a window is behind others or minimized).\n\
          • list — list running visible windows (to find what's open).\n\
          • close — terminate a process by name.\n\
          • wait — sleep for 'ms' milliseconds (default 1500). Use after navigation to let pages load."
@@ -32,11 +33,11 @@ impl Tool for AppTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["open", "open_url", "focus", "list", "close", "wait"]
+                    "enum": ["open", "open_url", "focus", "maximize", "list", "close", "wait"]
                 },
                 "name": {
                     "type": "string",
-                    "description": "Application name or exe (for open/focus/close)"
+                    "description": "Application name or window title fragment (for open/focus/maximize/close)"
                 },
                 "url": {
                     "type": "string",
@@ -127,11 +128,11 @@ impl Tool for AppTool {
                     final_url
                 ))
             }
-            "focus" => {
-                let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for focus action"))?;
+            "focus" | "maximize" => {
+                let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for focus/maximize action"))?;
                 focus_window_by_name(name)?;
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                Ok(format!("Focused '{}'. It is now the active window.", name))
+                Ok(format!("Focused and maximized '{}'. It is now the active, full-screen window.", name))
             }
             "list" => {
                 let apps = list_running_apps_internal();

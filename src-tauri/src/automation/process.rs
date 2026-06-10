@@ -2,8 +2,10 @@ use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextW, IsWindowVisible, GetWindowThreadProcessId,
-    SetForegroundWindow, ShowWindow, SW_RESTORE,
+    SetForegroundWindow, ShowWindow, SW_RESTORE, SW_MAXIMIZE,
+    BringWindowToTop, IsIconic,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 use windows::Win32::Foundation::{HWND, LPARAM, BOOL};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -553,27 +555,67 @@ pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
     Ok(child.id())
 }
 
-/// Sets the focus to a window matching the specified name.
-pub fn focus_window_by_name(name: &str) -> anyhow::Result<()> {
+/// Robustly brings a window to the foreground and maximizes it.
+fn force_foreground(hwnd: HWND, maximize: bool) {
     unsafe {
-        let mut hwnd = HWND(std::ptr::null_mut());
-        let name_lower = name.to_lowercase();
-        let list = list_running_apps_internal();
+        // If minimized, restore first
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let _ = ShowWindow(hwnd, if maximize { SW_MAXIMIZE } else { SW_RESTORE });
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
 
+/// Sets focus to a window matching the specified name and MAXIMIZES it so the
+/// agent has a stable, full-screen layout to work with. Robust foreground.
+pub fn focus_window_by_name(name: &str) -> anyhow::Result<()> {
+    focus_window_internal(name, true)
+}
+
+/// Focus a window; optionally maximize it.
+pub fn focus_window_internal(name: &str, maximize: bool) -> anyhow::Result<()> {
+    let name_lower = name.to_lowercase();
+    let mut found: Option<HWND> = None;
+    let list = list_running_apps_internal();
+    // Prefer an exact-ish title match, else first contains-match.
+    for app in &list {
+        let tl = app.name.to_lowercase();
+        if tl == name_lower || tl.starts_with(&name_lower) {
+            found = Some(HWND(app.hwnd as _));
+            break;
+        }
+    }
+    if found.is_none() {
         for app in &list {
             if app.name.to_lowercase().contains(&name_lower) {
-                hwnd = HWND(app.hwnd as _);
+                found = Some(HWND(app.hwnd as _));
                 break;
             }
         }
+    }
 
-        if hwnd.0.is_null() {
-            return Err(anyhow::anyhow!("Window not found matching '{}'. Is the app open?", name));
-        }
+    let hwnd = found.ok_or_else(|| anyhow::anyhow!("Window not found matching '{}'. Is the app open?", name))?;
+    if hwnd.0.is_null() {
+        return Err(anyhow::anyhow!("Invalid window handle for '{}'", name));
+    }
+    force_foreground(hwnd, maximize);
+    Ok(())
+}
 
-        let _ = ShowWindow(hwnd, SW_RESTORE);
-        let _ = SetForegroundWindow(hwnd);
-        Ok(())
+/// Maximize and focus the currently foreground window (or a named one).
+pub fn maximize_window_by_name(name: &str) -> anyhow::Result<()> {
+    focus_window_internal(name, true)
+}
+
+/// Block or unblock physical keyboard + mouse input from the user, so the agent
+/// can take full control without the user accidentally interfering. Synthetic
+/// input sent by the agent (SendInput) still works. The Secure Attention
+/// Sequence (Ctrl+Alt+Del) is never blocked, so the user always has an escape.
+pub fn set_user_input_blocked(blocked: bool) {
+    unsafe {
+        let _ = BlockInput(BOOL::from(blocked));
     }
 }
 
@@ -727,6 +769,13 @@ pub fn launch_app(name: String) -> Result<(), String> {
 #[tauri::command]
 pub fn focus_window(name: String) -> Result<(), String> {
     focus_window_by_name(&name).map_err(|e| e.to_string())
+}
+
+/// Tauri command — block/unblock physical user input (manual override / testing).
+#[tauri::command]
+pub fn set_input_blocked(blocked: bool) -> Result<(), String> {
+    set_user_input_blocked(blocked);
+    Ok(())
 }
 
 #[tauri::command]

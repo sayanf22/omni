@@ -12,7 +12,7 @@ use automation::screen::take_screenshot;
 use automation::ocr::{ocr_screen, find_text_on_screen};
 use automation::uia::get_ui_tree;
 use automation::input::{mouse_click, type_text, press_key, press_hotkey};
-use automation::process::{launch_app, focus_window, list_running_apps, get_running_windows};
+use automation::process::{launch_app, focus_window, list_running_apps, get_running_windows, set_input_blocked};
 
 // Imports from storage
 use storage::keychain::{save_api_key, get_api_key, has_api_key, delete_api_key};
@@ -186,6 +186,7 @@ pub fn run() {
             launch_app,
             focus_window,
             list_running_apps,
+            set_input_blocked,
             get_running_windows,
             save_api_key,
             get_api_key,
