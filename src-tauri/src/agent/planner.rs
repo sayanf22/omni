@@ -319,8 +319,17 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
          7. ANSWER WITH REAL DATA.\n\
             If the user asks 'read X and tell me' - gather info with tools, put the ACTUAL content\n\
             in the result field. Do not say 'task complete' without the answer.\n\
-         8. Maximum {max_s} steps. Be efficient.\n\
-         9. ONE valid JSON object per response. No markdown, no prose outside the JSON.\n\
+         8. NEVER STOP HALFWAY — FINISH THE WHOLE TASK.\n\
+            Opening an app is NOT completing the task. It is only step 1.\n\
+            Before you EVER output done, mentally re-read the user's request and check that\n\
+            EVERY part is actually finished. Examples:\n\
+            - 'open whatsapp and send X to Som' → done means the message was TYPED and SENT, not just app opened.\n\
+            - 'search Google for X and tell me' → done means you read the results and have the answer.\n\
+            - 'write a note in notepad' → done means the text is actually typed.\n\
+            If you just opened an app or did one sub-step, DO NOT output done — continue to the next step.\n\
+            Only output done when the FULL goal is genuinely achieved.\n\
+         9. Maximum {max_s} steps. Be efficient but COMPLETE — finishing the task matters more than saving steps.\n\
+         10. ONE valid JSON object per response. No markdown, no prose outside the JSON.\n\
          \n\
          == UNIVERSAL NAVIGATION ==\n\
          OPEN ANY WEBSITE (fastest):\n\
@@ -467,6 +476,34 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     let sys_context = crate::automation::process::get_system_context();
     system_prompt.push_str(&format!("\n\n== CURRENT SYSTEM STATE ==\n{}\n", sys_context));
 
+    // ── Conversation memory: inject recent tasks so follow-ups have context ──
+    // Lets the user say things like "you didn't do that, why?" or "do it again"
+    // and have the agent understand what happened in previous tasks this session.
+    if let Ok(recent) = crate::storage::sqlite::get_recent_tasks_internal(5) {
+        // Skip the very first (current) task record if present; show the prior ones.
+        let prior: Vec<_> = recent.into_iter()
+            .filter(|t| t.id != task_id)
+            .take(4)
+            .collect();
+        if !prior.is_empty() {
+            let mut hist = String::from(
+                "\n\n== RECENT TASK HISTORY (most recent first — for follow-up context) ==\n\
+                 If the user refers to 'that', 'it', 'the previous task', or asks 'why', \
+                 use this history to understand what they mean:\n"
+            );
+            for t in &prior {
+                let outcome = t.outcome.as_deref().unwrap_or("(no result)");
+                hist.push_str(&format!(
+                    "• Task: \"{}\" → Status: {} → Result: {}\n",
+                    t.description.trim(),
+                    t.status,
+                    outcome.trim(),
+                ));
+            }
+            system_prompt.push_str(&hist);
+        }
+    }
+
     // Fetch relevant memories
     if let Some(memories) = crate::ai::memory::fetch_mem0_memories(&instruction, &user_id).await {
         system_prompt.push_str(&format!("\n\nRelevant context from past tasks:\n{}", memories));
@@ -495,6 +532,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     let mut step_num = 1u32;
     let max_steps = MAX_STEPS;
     let mut steps_log: Vec<StepProgress> = Vec::new();
+    // Track whether the agent actually typed/clicked — used to catch premature "done".
+    let mut did_type_text = false;
+    let mut did_interact = false;
+    // Allow exactly one premature-done pushback so we never loop forever.
+    let mut premature_done_pushed = false;
     let mut final_outcome = String::from("Task completed.");
     let mut final_status = String::from("completed");
 
@@ -632,6 +674,49 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         // ── Case 1: Done ────────────────────────────────────────────────────
         if parsed["done"].as_bool().unwrap_or(false) {
             let result_str = parsed["result"].as_str().unwrap_or("Done").to_string();
+
+            // ── Premature-done guard ─────────────────────────────────────────
+            // Catch the common failure where the agent opens an app then declares
+            // done without finishing a "send/write/type/fill" task. We push back
+            // exactly once with a reminder of what's left.
+            let instr_lower = instruction.to_lowercase();
+            let task_needs_typing = ["send", "message", "write", "type", "post",
+                "reply", "email", "compose", "fill", "search for", "comment", "tweet"]
+                .iter().any(|kw| instr_lower.contains(kw));
+            let task_needs_interaction = task_needs_typing || ["click", "open and",
+                "play", "navigate", "go to", "find"].iter().any(|kw| instr_lower.contains(kw));
+
+            let premature = !premature_done_pushed && (
+                (task_needs_typing && !did_type_text) ||
+                (task_needs_interaction && !did_interact && step_num <= 2)
+            );
+
+            if premature {
+                premature_done_pushed = true;
+                let _ = app.emit("task:step", serde_json::json!({
+                    "step_num": step_num,
+                    "thought": "Re-checking: the task isn't fully done yet.",
+                    "tool": null,
+                    "description": "Opening the app is not the whole task — continuing to complete it.",
+                    "success": false
+                }));
+                messages.push(ChatMessage { role: "assistant".to_string(), content: ai_response });
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: format!(
+                        "STOP — the task is NOT complete yet. You only did part of it. \
+                         The full task was: \"{}\". \
+                         You have not actually {}. \
+                         Do NOT output done. Continue with the next concrete step now \
+                         (e.g. find the search box, type the contact, click it, type the message, then send).",
+                        instruction,
+                        if task_needs_typing { "typed and sent/written the required text" } else { "finished the requested actions" }
+                    ),
+                });
+                step_num += 1;
+                continue 'main;
+            }
+
             final_outcome = result_str.clone();
             steps_log.push(StepProgress {
                 step_num, thought: "Task completed.".to_string(),
@@ -713,10 +798,23 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 }
 
                 // Execute tool
-                let (outcome_text, success) = match tool.execute(tool_params).await {
+                let (outcome_text, success) = match tool.execute(tool_params.clone()).await {
                     Ok(out) => (out, true),
                     Err(e) => (format!("Tool '{}' failed: {}", name, e), false),
                 };
+
+                // ── Track real interactions (for the premature-done guard) ──────
+                if success {
+                    did_interact = true;
+                    let act = tool_params["action"].as_str().unwrap_or("");
+                    if name == "keyboard" && (act == "type"
+                        || (act == "key" && tool_params["key"].as_str() == Some("enter"))) {
+                        // Typing text, or pressing Enter to submit, counts as "typed".
+                        if act == "type" { did_type_text = true; }
+                    }
+                    // Clipboard paste also counts as entering text.
+                    if name == "clipboard" && act == "paste" { did_type_text = true; }
+                }
 
                 // ── Injection defense: sanitize tool output before injecting into context ──
                 // Wrap in DATA tags and flag any injection patterns (data/instruction separation).
