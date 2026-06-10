@@ -1,7 +1,7 @@
 use serde_json::Value;
 use crate::tools::{Tool, RiskLevel};
 use crate::automation::input::{
-    mouse_click_internal, mouse_right_click, mouse_double_click, mouse_move_to, mouse_scroll
+    mouse_click_internal, mouse_right_click, mouse_double_click, mouse_scroll, human_move
 };
 
 pub struct MouseTool;
@@ -69,7 +69,7 @@ impl Tool for MouseTool {
                 Ok("Double clicked mouse left button".to_string())
             }
             "move" => {
-                mouse_move_to(x, y)?;
+                human_move(x, y)?;
                 Ok("Moved mouse pointer".to_string())
             }
             "scroll" => {

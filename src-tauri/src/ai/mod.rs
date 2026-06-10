@@ -16,15 +16,53 @@ pub enum TaskType {
     Vision,
     Coding,
     Writing,
+    /// Multi-step / analytical tasks that benefit from a dedicated reasoning model.
+    Reasoning,
 }
 
+impl TaskType {
+    /// The primary SQLite role string this task type maps to.
+    pub fn role(&self) -> &'static str {
+        match self {
+            TaskType::Vision => "vision",
+            TaskType::Coding => "coding",
+            TaskType::Writing => "writing",
+            // Reasoning has no dedicated DB column — it is resolved by model
+            // capability heuristics (see resolve_active_model). The coding role
+            // is the natural fallback bucket for analytical work.
+            TaskType::Reasoning => "coding",
+        }
+    }
+}
+
+/// Classifies a user instruction so we can route it to the most appropriate
+/// model. Order of precedence matters: reasoning beats coding/writing because a
+/// complex analytical request often also mentions code or writing.
 pub fn detect_task_type(instruction: &str) -> TaskType {
     let instr_lower = instruction.to_lowercase();
-    let coding_keywords = vec![
+
+    // Reasoning: explicit multi-step / analytical signals. Checked FIRST so a
+    // request like "analyze this code and explain why it fails" routes to a
+    // reasoning model rather than a plain coding model.
+    let reasoning_keywords = [
+        "analyze", "analyse", "reason", "figure out", "work out", "step by step",
+        "step-by-step", "compare", "evaluate", "investigate", "diagnose",
+        "troubleshoot", "explain why", "why does", "why is", "how should",
+        "strategy", "plan how", "calculate", "solve", "deduce", "prove",
+        "optimize", "trade-off", "tradeoff", "pros and cons", "decide whether",
+        "research and", "summarize and", "think through",
+    ];
+    for kw in reasoning_keywords {
+        if instr_lower.contains(kw) {
+            return TaskType::Reasoning;
+        }
+    }
+
+    let coding_keywords = [
         "code", "function", "bug", "fix", "git", "vscode", "python",
         "javascript", "typescript", "rust", "class", "component", "terminal", "npm", "cargo"
     ];
-    let writing_keywords = vec![
+    let writing_keywords = [
         "write", "email", "post", "linkedin", "tweet", "message",
         "draft", "caption", "blog"
     ];
@@ -40,6 +78,67 @@ pub fn detect_task_type(instruction: &str) -> TaskType {
         }
     }
     TaskType::Vision
+}
+
+/// Resolve the concrete model to use for a task type, honoring the user's
+/// configured roles and adding reasoning-model routing on top.
+///
+/// Routing logic (production rules):
+///   - Reasoning  → the best active reasoning-capable model (o1/o3, deepseek-reasoner,
+///                  claude thinking models, etc.). Falls back to coding → writing → vision.
+///   - Coding     → active coding model, else vision.
+///   - Writing    → active writing model, else vision.
+///   - Vision     → active vision model.
+/// Any role with no configured model finally falls back to *any* active model so
+/// a single-model setup always works.
+pub fn resolve_active_model(task_type: TaskType) -> anyhow::Result<Option<CustomModel>> {
+    // Reasoning gets first crack at a dedicated reasoning model.
+    if task_type == TaskType::Reasoning {
+        if let Some(m) = best_reasoning_model()? {
+            return Ok(Some(m));
+        }
+    }
+
+    // Try the primary role for this task.
+    if let Some(m) = get_active_model_for_role_db(task_type.role())? {
+        return Ok(Some(m));
+    }
+
+    // Role-specific fallbacks.
+    let fallbacks: &[&str] = match task_type {
+        TaskType::Vision => &[],
+        TaskType::Coding => &["vision", "writing"],
+        TaskType::Writing => &["vision", "coding"],
+        TaskType::Reasoning => &["writing", "vision"],
+    };
+    for role in fallbacks {
+        if let Some(m) = get_active_model_for_role_db(role)? {
+            return Ok(Some(m));
+        }
+    }
+
+    // Last resort: any active model at all (single-model setups).
+    let any_active = crate::storage::sqlite::get_custom_models_db()?
+        .into_iter()
+        .find(|m| m.is_active);
+    Ok(any_active)
+}
+
+/// Pick the strongest active reasoning-capable model, if one is configured.
+/// Prefers models flagged for coding (analytical bucket) when ties occur.
+fn best_reasoning_model() -> anyhow::Result<Option<CustomModel>> {
+    let models = crate::storage::sqlite::get_custom_models_db()?;
+    let mut best: Option<CustomModel> = None;
+    for m in models.into_iter().filter(|m| m.is_active) {
+        if crate::ai::client::model_is_reasoning(&m) {
+            // Prefer a reasoning model that is also assigned the coding role.
+            match &best {
+                Some(b) if b.role_coding && !m.role_coding => {}
+                _ => best = Some(m),
+            }
+        }
+    }
+    Ok(best)
 }
 
 use std::sync::Mutex;
@@ -122,22 +221,14 @@ pub async fn call_ai_chat(
         }
     }
 
-    let role = match task_type {
-        TaskType::Vision => "vision",
-        TaskType::Coding => "coding",
-        TaskType::Writing => "writing",
-    };
+    let role = task_type.role();
 
-    // 1. Look up the active model for the role
-    let mut selected_model = get_active_model_for_role_db(role)?;
-
-    // Fall back to vision/primary if other roles are not configured
-    if selected_model.is_none() && task_type != TaskType::Vision {
-        selected_model = get_active_model_for_role_db("vision")?;
-    }
+    // 1. Resolve the active model using capability-aware routing
+    //    (reasoning models for analytical tasks, role models otherwise).
+    let selected_model = resolve_active_model(task_type)?;
 
     let model = selected_model.ok_or_else(|| {
-        anyhow::anyhow!("No active model configured for role '{}' or fallback. Please configure at least one active Vision model.", role)
+        anyhow::anyhow!("No active model configured for role '{}' or fallback. Please configure at least one active model in Settings.", role)
     })?;
 
     // 2. Fetch API key from Keychain

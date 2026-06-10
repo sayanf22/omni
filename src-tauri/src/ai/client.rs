@@ -9,6 +9,51 @@ pub fn model_supports_vision(model: &CustomModel) -> bool {
     supports_vision(model)
 }
 
+/// Heuristic: does this model name correspond to a dedicated *reasoning* model?
+/// Reasoning models (OpenAI o-series, DeepSeek R1/Reasoner, Claude extended-thinking
+/// tiers, QwQ, etc.) think step-by-step internally and are worth routing complex,
+/// multi-step analytical tasks to. We detect by well-known name fragments since
+/// providers expose no machine-readable capability flag.
+pub fn model_is_reasoning(model: &CustomModel) -> bool {
+    let provider = model.provider_type.to_lowercase();
+    let name = model.model_name.to_lowercase();
+
+    // Generic reasoning-model signals that hold across providers/gateways.
+    let generic = name.contains("reason")          // deepseek-reasoner, *-reasoning
+        || name.contains("-r1") || name.contains("r1-") || name == "r1"
+        || name.contains("deepseek-r1")
+        || name.contains("qwq")                     // Qwen QwQ
+        || name.contains("thinking")                // gemini-*-thinking, claude thinking
+        || name.contains("magistral")               // Mistral reasoning
+        || name.contains("phi-4-reasoning");
+
+    match provider.as_str() {
+        "openai" => {
+            // o1 / o3 / o4 series + GPT-5 reasoning tier.
+            name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+                || name.contains("-o1") || name.contains("-o3") || name.contains("-o4")
+                || name.contains("gpt-5")
+                || generic
+        }
+        "deepseek" => name.contains("reasoner") || name.contains("r1") || generic,
+        "anthropic" => {
+            // Claude 3.7 + Claude 4 tiers expose extended thinking.
+            name.contains("3-7") || name.contains("3.7")
+                || name.contains("claude-opus-4") || name.contains("claude-sonnet-4")
+                || name.contains("opus-4") || name.contains("sonnet-4")
+                || generic
+        }
+        // OpenRouter / custom gateways: rely on the generic fragments plus the
+        // common provider-prefixed reasoning names.
+        _ => {
+            generic
+                || name.contains("o1-") || name.contains("o3-") || name.contains("o4-")
+                || name.contains("gpt-5")
+                || name.contains("grok-3") || name.contains("grok-4")
+        }
+    }
+}
+
 fn supports_vision(model: &CustomModel) -> bool {
     let provider = model.provider_type.to_lowercase();
     let model_name = model.model_name.to_lowercase();

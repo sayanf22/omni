@@ -7,7 +7,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, GetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
+use windows::Win32::Foundation::POINT;
 
 /// Sets the clipboard content to the specified text using the Win32 API.
 pub fn set_clipboard_text(text: &str) -> anyhow::Result<()> {
@@ -92,8 +93,132 @@ fn to_normalized(x: i32, y: i32) -> anyhow::Result<(i32, i32)> {
     }
 }
 
-/// Simulates a left mouse click at (x, y) using Win32 SendInput — fast, no Enigo overhead.
+/// Returns the current cursor position in screen pixels, or (0,0) on failure.
+fn current_cursor_pos() -> (i32, i32) {
+    unsafe {
+        let mut p = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut p).is_ok() {
+            (p.x, p.y)
+        } else {
+            (0, 0)
+        }
+    }
+}
+
+/// Tiny, dependency-free xorshift PRNG seeded from the system clock. Used only
+/// for generating natural mouse jitter — cryptographic quality is not required.
+struct Rng(u64);
+impl Rng {
+    fn new() -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E3779B97F4A7C15)
+            | 1;
+        Rng(seed)
+    }
+    /// Next f64 in [0.0, 1.0).
+    fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        // 53-bit mantissa for a uniform double.
+        ((x >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+}
+
+/// Moves the mouse from its current position to (dest_x, dest_y) along a natural,
+/// curved, human-like path using the **WindMouse** algorithm (gravity + wind
+/// forces). This avoids the dead-straight, instantaneous jumps that make
+/// automation obvious. Tuned to stay fast (sub-second) while looking organic.
+///
+/// Reference: Ben Land's WindMouse (ben.land/post/2021/04/25/windmouse-human-mouse-movement).
+pub fn human_move(dest_x: i32, dest_y: i32) -> anyhow::Result<()> {
+    let (start_x, start_y) = current_cursor_pos();
+    let total_dist = (((dest_x - start_x).pow(2) + (dest_y - start_y).pow(2)) as f64).sqrt();
+
+    // Very short hops don't need a curve — snap directly.
+    if total_dist < 4.0 {
+        return mouse_move_to(dest_x, dest_y);
+    }
+
+    // WindMouse tuning constants.
+    let g_0: f64 = 9.0;   // gravity — pulls toward the target
+    let w_0: f64 = 3.0;   // wind — random perturbation magnitude
+    let mut m_0: f64 = 18.0; // max step size (higher = faster)
+    let d_0: f64 = 12.0;  // distance at which wind/step start damping
+    let sqrt3 = 3.0_f64.sqrt();
+    let sqrt5 = 5.0_f64.sqrt();
+
+    let mut rng = Rng::new();
+    let (mut cx, mut cy) = (start_x as f64, start_y as f64);
+    let (mut vx, mut vy) = (0.0_f64, 0.0_f64);
+    let (mut wx, mut wy) = (0.0_f64, 0.0_f64);
+    let (mut last_x, mut last_y) = (start_x, start_y);
+
+    // Safety cap so a pathological case can never spin forever / block too long.
+    let max_iters = 600;
+    let mut iters = 0;
+
+    loop {
+        iters += 1;
+        if iters > max_iters {
+            break;
+        }
+        let dx = dest_x as f64 - cx;
+        let dy = dest_y as f64 - cy;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist < 1.0 {
+            break;
+        }
+
+        let w_mag = w_0.min(dist);
+        if dist >= d_0 {
+            wx = wx / sqrt3 + (2.0 * rng.next_f64() - 1.0) * w_mag / sqrt5;
+            wy = wy / sqrt3 + (2.0 * rng.next_f64() - 1.0) * w_mag / sqrt5;
+        } else {
+            wx /= sqrt3;
+            wy /= sqrt3;
+            if m_0 < 3.0 {
+                m_0 = rng.next_f64() * 3.0 + 3.0;
+            } else {
+                m_0 /= sqrt5;
+            }
+        }
+
+        vx += wx + g_0 * dx / dist;
+        vy += wy + g_0 * dy / dist;
+        let v_mag = (vx * vx + vy * vy).sqrt();
+        if v_mag > m_0 {
+            let v_clip = m_0 / 2.0 + rng.next_f64() * m_0 / 2.0;
+            vx = (vx / v_mag) * v_clip;
+            vy = (vy / v_mag) * v_clip;
+        }
+
+        cx += vx;
+        cy += vy;
+        let mx = cx.round() as i32;
+        let my = cy.round() as i32;
+        if mx != last_x || my != last_y {
+            let _ = mouse_move_to(mx, my);
+            last_x = mx;
+            last_y = my;
+            // Brief, slightly randomized pause for a natural cadence.
+            let pause = 1 + (rng.next_f64() * 2.0) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(pause));
+        }
+    }
+
+    // Land precisely on the target.
+    mouse_move_to(dest_x, dest_y)
+}
+
+/// Simulates a left mouse click at (x, y). The cursor first glides to the target
+/// along a natural WindMouse path, then clicks via Win32 SendInput.
 pub fn mouse_click_internal(x: i32, y: i32) -> anyhow::Result<()> {
+    let _ = human_move(x, y);
     let (nx, ny) = to_normalized(x, y)?;
     unsafe {
         let inputs = [
@@ -118,8 +243,9 @@ pub fn mouse_click_internal(x: i32, y: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Simulates a right mouse click at (x, y) using Win32 SendInput.
+/// Simulates a right mouse click at (x, y). Glides naturally to the target first.
 pub fn mouse_right_click(x: i32, y: i32) -> anyhow::Result<()> {
+    let _ = human_move(x, y);
     let (nx, ny) = to_normalized(x, y)?;
     unsafe {
         let inputs = [
@@ -144,8 +270,9 @@ pub fn mouse_right_click(x: i32, y: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Simulates a double left mouse click at (x, y) using Win32 SendInput.
+/// Simulates a double left mouse click at (x, y). Glides naturally to the target first.
 pub fn mouse_double_click(x: i32, y: i32) -> anyhow::Result<()> {
+    let _ = human_move(x, y);
     let (nx, ny) = to_normalized(x, y)?;
     unsafe {
         let inputs = [

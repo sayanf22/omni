@@ -3,13 +3,18 @@ use tauri::Emitter;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use crate::tools::{get_all_tools, RiskLevel};
-use crate::ai::{detect_task_type, call_ai_chat, ChatMessage, TaskType};
+use crate::ai::{detect_task_type, call_ai_chat, ChatMessage};
 use crate::storage::sqlite::{save_task, Task, save_audit, AuditEntry};
 use crate::security::permissions::{get_permission_gate, PendingApproval};
 
 use std::sync::OnceLock;
 use std::sync::Arc;
 use tokio::sync::Notify;
+
+/// Maximum ReAct steps before the agent gives up.
+const MAX_STEPS: u32 = 20;
+
+fn max_steps_const() -> u32 { MAX_STEPS }
 
 // ── Cancel infrastructure ────────────────────────────────────────────────────
 
@@ -110,17 +115,15 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     let task_type = detect_task_type(&instruction);
     let tools = get_all_tools();
 
-    let vision_available = {
-        let role = match task_type {
-            TaskType::Vision  => "vision",
-            TaskType::Coding  => "coding",
-            TaskType::Writing => "writing",
-        };
-        let model = crate::storage::sqlite::get_active_model_for_role_db(role)
-            .ok().flatten()
-            .or_else(|| crate::storage::sqlite::get_active_model_for_role_db("vision").ok().flatten());
-        model.map_or(false, |m| crate::ai::client::model_supports_vision(&m))
-    };
+    // Resolve the model that will actually run this task (capability-aware
+    // routing — reasoning models for analytical work, role models otherwise).
+    let resolved_model = crate::ai::resolve_active_model(task_type).ok().flatten();
+    let vision_available = resolved_model
+        .as_ref()
+        .map_or(false, |m| crate::ai::client::model_supports_vision(m));
+    let reasoning_model = resolved_model
+        .as_ref()
+        .map_or(false, |m| crate::ai::client::model_is_reasoning(m));
 
     // Build tools description for system prompt
     let mut tools_desc = Vec::new();
@@ -133,45 +136,82 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     }
 
     let screen_context = if vision_available {
-        "You see the current screen in the screenshot provided with each message. Use what you see to locate UI elements and decide what to click/type."
+        "VISION: You can SEE the current screen — a screenshot is attached to every message. \
+         Read it carefully to locate the exact UI element (button, field, link, icon) and its \
+         on-screen position before you click or type. Never guess coordinates blindly when you can see."
     } else {
-        "IMPORTANT: Your model does NOT support screen vision — you cannot see screenshots.\n\
-         Reason from the task description and tool outcomes only.\n\
-         Use 'screen' tool with action='ocr' to read text, or action='ui_tree' for accessibility element positions.\n\
-         Use 'app' tool to launch/focus applications. Use 'mouse' after getting coordinates from ocr/ui_tree."
+        "NO VISION: Your model CANNOT see screenshots. You must perceive the screen through tools:\n\
+         • Use 'screen' with action='ocr' to read the visible text on screen.\n\
+         • Use 'screen' with action='ui_tree' to get clickable elements WITH their x,y coordinates.\n\
+         • ALWAYS call ocr or ui_tree to observe BEFORE you click at coordinates — never invent positions.\n\
+         • Use 'app' to launch/focus an application by name."
+    };
+
+    let reasoning_note = if reasoning_model {
+        "\nYou are running on a reasoning-capable model. Think carefully and plan, but keep your \
+         visible 'thought' field to ONE short sentence — do not dump long chain-of-thought into the JSON.\n"
+    } else {
+        ""
     };
 
     let mut system_prompt = format!(
-        "You are Omni, a Windows desktop automation agent.\n\
-         {}\n\n\
-         Available tools:\n{}\n\n\
-         RULES:\n\
-         - Think step by step. Use the minimum number of steps.\n\
-         - You control a real Windows PC — mouse, keyboard, apps, files.\n\
-         - ALWAYS use tools to actually perform actions. Never just describe what to do.\n\
-         - For file deletion or sending emails/posts: output {{\"question\":\"...\"}} to ask the user first.\n\
-         - Stop at 20 steps maximum.\n\
-         - When finished: output {{\"done\":true, \"result\":\"brief summary\"}}.\n\
-         - Respond ONLY in valid JSON. No markdown. No text outside the JSON.\n\n\
-         HOW TO TYPE TEXT INTO AN APP (very important):\n\
-         1. Open the app with the 'app' tool (action 'open'). It auto-waits for the window\n\
-            to be ready and focuses it. The text caret is then active in editors like Notepad.\n\
-         2. Immediately use the 'keyboard' tool with action 'type' and the 'text' you want.\n\
-            The text goes to whatever window is focused — no need to click first for Notepad/Word.\n\
-         3. If a specific field must be focused first (browser address bar, a form box),\n\
-            use 'keyboard' hotkeys (e.g. Ctrl+L for browser address bar) or click the field,\n\
-            then 'keyboard' type.\n\
-         4. To save: 'keyboard' hotkey [\"ctrl\",\"s\"].\n\n\
-         WORKED EXAMPLE — task: \"open notepad and write Hello World\":\n\
+        "You are Omni, an autonomous Windows desktop automation agent. You control a REAL PC \
+         (mouse, keyboard, applications, files) on behalf of the user.\n\
+         {}\n{}\n\
+         ════════ AVAILABLE TOOLS ════════\n{}\n\n\
+         ════════ MISSION RULES (read every time) ════════\n\
+         1. STAY ON THE EXACT TASK. Do ONLY what the user asked — nothing more, nothing less. \
+            Never substitute a different app, website, or goal because it seems easier. \
+            If the user says \"go to LinkedIn and read my bio\", you open a browser and go to \
+            linkedin.com — you do NOT open a chat app, an IDE, or message anyone.\n\
+         2. NEVER send messages, posts, emails, or text to ANY person or app unless the task \
+            explicitly tells you to. Reading/looking is the default; writing/sending requires \
+            an explicit instruction.\n\
+         3. PLAN FIRST. On step 1, think about the concrete sequence: which app opens the task, \
+            how to navigate, how to read the answer. Then execute one tool per step.\n\
+         4. OBSERVE BEFORE ACTING. Before clicking/typing into a target, confirm the right window \
+            is focused and the right element exists (via the screenshot or ocr/ui_tree). If the \
+            wrong window is in front, focus the correct one first with the 'app' tool.\n\
+         5. VERIFY AFTER ACTING. After each action, check the tool result (and screen) to confirm \
+            it worked before moving on. If it failed, adapt — do not blindly repeat the same step.\n\
+         6. ALWAYS use tools to actually perform actions. Never just describe what you would do.\n\
+         7. ASK before irreversible/destructive actions (deleting files, sending emails/messages/posts, \
+            making purchases): output {{\"question\":\"...\"}} and wait.\n\
+         8. To ANSWER a question the user asked (e.g. \"read my bio and tell me\"), gather the info \
+            with tools (open page → ocr/read), then finish with the answer in the 'result' field.\n\
+         9. Use the MINIMUM number of steps. Stop at {} steps maximum.\n\
+         10. When the goal is fully achieved: output {{\"done\":true, \"result\":\"the answer / what you accomplished\"}}.\n\
+         11. Respond with ONE valid JSON object only. No markdown, no prose, no text outside the JSON.\n\n\
+         ════════ HOW TO OPEN A WEBSITE (browser) ════════\n\
+         1. {{\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"chrome\"}}}}  (or \"msedge\")\n\
+         2. {{\"tool\":\"keyboard\",\"params\":{{\"action\":\"hotkey\",\"keys\":[\"ctrl\",\"l\"]}}}}  (focus the address bar)\n\
+         3. {{\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"linkedin.com/in/your-profile\"}}}}\n\
+         4. {{\"tool\":\"keyboard\",\"params\":{{\"action\":\"key\",\"key\":\"enter\"}}}}\n\
+         5. Wait for load, then read the page (screenshot if you have vision, else 'screen' ocr).\n\n\
+         ════════ HOW TO TYPE TEXT INTO AN APP ════════\n\
+         1. Open the app with 'app' (action 'open'); it auto-waits and focuses the window.\n\
+         2. Use 'keyboard' action 'type' with the 'text'. It goes to the focused window.\n\
+         3. For a specific field (address bar, search box), focus it first (Ctrl+L, or click it), then type.\n\
+         4. To save: 'keyboard' action 'hotkey' keys [\"ctrl\",\"s\"].\n\n\
+         WORKED EXAMPLE — \"open notepad and write Hello World\":\n\
          Step 1 -> {{\"thought\":\"Open Notepad\",\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"notepad\"}}}}\n\
          Step 2 -> {{\"thought\":\"Notepad is focused, type the text\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Hello World\"}}}}\n\
          Step 3 -> {{\"done\":true,\"result\":\"Wrote 'Hello World' in Notepad\"}}\n\n\
-         Valid JSON response formats:\n\
+         WORKED EXAMPLE — \"go to linkedin and read my bio and tell me\":\n\
+         Step 1 -> {{\"thought\":\"Open the browser\",\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"chrome\"}}}}\n\
+         Step 2 -> {{\"thought\":\"Focus the address bar\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"hotkey\",\"keys\":[\"ctrl\",\"l\"]}}}}\n\
+         Step 3 -> {{\"thought\":\"Navigate to LinkedIn\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"linkedin.com\"}}}}\n\
+         Step 4 -> {{\"thought\":\"Go\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"key\",\"key\":\"enter\"}}}}\n\
+         Step 5 -> {{\"thought\":\"Read the profile bio from the page\",\"tool\":\"screen\",\"params\":{{\"action\":\"ocr\"}}}}\n\
+         Step 6 -> {{\"done\":true,\"result\":\"Your LinkedIn bio reads: <the bio text>\"}}\n\n\
+         ════════ VALID JSON RESPONSE FORMATS ════════\n\
          1) {{\"thought\":\"why you're doing this\", \"tool\":\"tool_name\", \"params\":{{...}}}}\n\
-         2) {{\"done\":true, \"result\":\"what was accomplished\"}}\n\
-         3) {{\"question\":\"specific question for user\"}}",
+         2) {{\"done\":true, \"result\":\"the answer or what was accomplished\"}}\n\
+         3) {{\"question\":\"specific question for the user\"}}",
         screen_context,
-        serde_json::to_string_pretty(&tools_desc).unwrap_or_default()
+        reasoning_note,
+        serde_json::to_string_pretty(&tools_desc).unwrap_or_default(),
+        max_steps_const(),
     );
 
     // Fetch relevant memories
@@ -200,7 +240,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     ];
 
     let mut step_num = 1u32;
-    let max_steps = 20;
+    let max_steps = MAX_STEPS;
     let mut steps_log: Vec<StepProgress> = Vec::new();
     let mut final_outcome = String::from("Task completed.");
     let mut final_status = String::from("completed");
