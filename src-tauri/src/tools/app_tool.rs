@@ -61,16 +61,27 @@ impl Tool for AppTool {
         match action {
             "open" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for open action"))?;
-                let pid = launch_app_internal(name)?;
-                // Wait for the app window to be ready
-                tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
-                let _ = focus_window_by_name(name);
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                Ok(format!(
-                    "Opened '{}' (PID {}). Window is focused and ready. \
-                     For text editors, the cursor is in the text area — use keyboard 'type' now.",
-                    name, pid
-                ))
+                match launch_app_internal(name) {
+                    Ok(pid) => {
+                        // Wait for the app window to be ready
+                        tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+                        let _ = focus_window_by_name(name);
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        Ok(format!(
+                            "Opened '{}' (PID {}). Window is focused and ready.",
+                            name, pid
+                        ))
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        // Propagate the error clearly so the AI can tell the user
+                        // and optionally offer to open the Store/download page.
+                        Err(anyhow::anyhow!(
+                            "Could not open '{}': {}",
+                            name, msg
+                        ))
+                    }
+                }
             }
             "open_url" => {
                 let url = params["url"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'url' for open_url action"))?;

@@ -328,6 +328,10 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            app open name=spotify    (also: telegram, discord, netflix, teams, slack, zoom, vlc, etc.)\n\
            The launcher auto-discovers any installed app — Store apps, .exe apps, and PATH commands.\n\
            Just use the common everyday name. No need to know the exact exe path or package ID.\n\
+           IF THE APP IS NOT INSTALLED: The tool returns an error saying so.\n\
+             -> Tell the user clearly: 'X is not installed on your PC.'\n\
+             -> Then ask: 'Would you like me to open the Microsoft Store or official website to download it?'\n\
+             -> If yes: use open_url with the Store/download page URL.\n\
          \n\
          == WORKED EXAMPLES ==\n\
          TASK: 'open notepad and write Hello World'\n\

@@ -351,9 +351,53 @@ fn launch_via_path(name: &str) -> anyhow::Result<u32> {
     Ok(child.id())
 }
 
+/// Check if a Store app with the given PackageFamilyName is actually installed.
+/// Extracts the PFN from an AUMID (everything before the '!').
+fn is_uwp_installed(aumid: &str) -> bool {
+    // AUMID format: PackageFamilyName!AppId
+    let pfn = match aumid.split('!').next() {
+        Some(p) => p,
+        None => return false,
+    };
+    // Ask PowerShell — fast, definitive, no filesystem guessing.
+    let script = format!(
+        "if (Get-AppxPackage -Name (Get-AppxPackage | Where-Object {{$_.PackageFamilyName -eq '{}' }} | Select-Object -First 1 -ExpandProperty Name) -ErrorAction SilentlyContinue) {{ 'yes' }} else {{ 'no' }}",
+        pfn.replace('\'', "")
+    );
+    // Faster alternative: just check if PFN exists in package list
+    let script2 = format!(
+        "if (Get-AppxPackage | Where-Object {{$_.PackageFamilyName -eq '{}'}}) {{ Write-Output 'yes' }} else {{ Write-Output 'no' }}",
+        pfn.replace('\'', "")
+    );
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script2])
+        .output()
+    {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+            s == "yes"
+        }
+        Err(_) => {
+            // If PowerShell fails, assume it might be installed and try anyway
+            true
+        }
+    }
+}
+
 /// Launch a Store/UWP app by AUMID using `explorer.exe shell:AppsFolder\<AUMID>`.
+/// Checks installation first so we can return a meaningful error if not installed.
 /// This is the official Microsoft-recommended way to launch packaged apps.
 fn launch_uwp(aumid: &str) -> anyhow::Result<u32> {
+    // Pre-flight: verify the app is actually installed.
+    // explorer.exe always returns Ok(pid) even when the AUMID doesn't exist,
+    // so without this check we'd silently do nothing.
+    if !is_uwp_installed(aumid) {
+        return Err(anyhow::anyhow!(
+            "App not installed (AUMID: {}). \
+             This app is not installed on this PC.",
+            aumid
+        ));
+    }
     let target = format!("shell:AppsFolder\\{}", aumid);
     let child = std::process::Command::new("explorer.exe")
         .arg(&target)
@@ -425,11 +469,12 @@ pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
     tracing::debug!("launch_app: direct spawn for '{}'", name);
     let child = std::process::Command::new(name)
         .spawn()
-        .map_err(|e| anyhow::anyhow!(
-            "Could not find or launch '{}'. \
-             If it's a Windows Store app, the AUMID may need to be added. \
-             If it's a desktop app, check the install path. Error: {}",
-            name, e
+        .map_err(|_| anyhow::anyhow!(
+            "App '{}' is not installed on this PC and could not be found anywhere. \
+             It is not in Program Files, AppData, PATH, or the Windows Store. \
+             Tell the user the app is not installed and ask if they want you to \
+             open the Microsoft Store or official website to download it.",
+            name
         ))?;
     Ok(child.id())
 }
