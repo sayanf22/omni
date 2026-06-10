@@ -28,7 +28,7 @@ use storage::supabase::{
 
 // Imports from other modules
 use security::permissions::{approve_request, answer_question};
-use agent::planner::{run_task, cancel_task};
+use agent::planner::{run_task, cancel_task, get_live_state};
 use agent::sidecar::SidecarState;
 use ai::test_model_connection;
 use ai::client::{probe_model_vision, probe_model_audio, probe_model_video, detect_model_reasoning};
@@ -214,6 +214,7 @@ pub fn run() {
             answer_question,
             run_task,
             cancel_task,
+            get_live_state,
             test_model_connection,
             probe_model_vision,
             trigger_mic_start,

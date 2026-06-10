@@ -205,6 +205,56 @@ pub fn inject_message(msg: String) {
     if let Ok(mut v) = get_injected().lock() { v.push(msg); }
 }
 
+// ── Live overlay state (polling fallback) ─────────────────────────────────────
+// The floating overlay window reads this every few hundred ms. Event delivery to
+// a hidden/secondary webview can be unreliable, so polling GUARANTEES the panel
+// always reflects what the agent is doing (no more empty/black box).
+#[derive(Clone, serde::Serialize)]
+pub struct LiveSnapshot {
+    pub phase: String,   // idle|thinking|working|question|approval|success|error
+    pub header: String,
+    pub heard: String,
+    pub steps: Vec<serde_json::Value>,
+    pub question_id: String,
+    pub question: String,
+    pub seq: u64,
+}
+
+fn live_state() -> &'static std::sync::Mutex<LiveSnapshot> {
+    static S: OnceLock<std::sync::Mutex<LiveSnapshot>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(LiveSnapshot {
+        phase: "idle".into(), header: String::new(), heard: String::new(),
+        steps: Vec::new(), question_id: String::new(), question: String::new(), seq: 0,
+    }))
+}
+
+fn live_bump(f: impl FnOnce(&mut LiveSnapshot)) {
+    if let Ok(mut s) = live_state().lock() { f(&mut s); s.seq += 1; }
+}
+
+pub fn live_reset() {
+    live_bump(|s| { s.phase = "idle".into(); s.header.clear(); s.heard.clear();
+        s.steps.clear(); s.question_id.clear(); s.question.clear(); });
+}
+pub fn live_set_phase(phase: &str, header: &str) {
+    live_bump(|s| { s.phase = phase.into(); s.header = header.into(); });
+}
+pub fn live_set_heard(heard: &str) { live_bump(|s| s.heard = heard.into()); }
+pub fn live_add_step(step: serde_json::Value) {
+    live_bump(|s| { s.steps.push(step); let n = s.steps.len(); if n > 40 { s.steps.drain(0..n - 40); } });
+}
+pub fn live_set_question(id: &str, q: &str) {
+    live_bump(|s| { s.phase = "question".into(); s.question_id = id.into(); s.question = q.into(); });
+}
+pub fn live_clear_question() { live_bump(|s| { s.question_id.clear(); s.question.clear(); }); }
+
+/// Tauri command — overlay polls this to render the live activity panel.
+#[tauri::command]
+pub fn get_live_state() -> serde_json::Value {
+    let s = live_state().lock().unwrap();
+    serde_json::to_value(&*s).unwrap_or(serde_json::json!({"phase":"idle","seq":0}))
+}
+
 // ── Tauri Commands ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,6 +366,10 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         "task_id": task_id.clone(),
         "instruction": instruction.clone()
     }));
+    // Live snapshot for the polling overlay.
+    live_reset();
+    live_set_heard(&instruction);
+    live_set_phase("thinking", "Planning…");
 
     // Show the top-right overlay so the user always sees what the agent is doing,
     // even when the main dashboard is closed or hidden. Force it visible + on top
@@ -421,6 +475,15 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
          {sc}\n{rn}\n\
          \n== AVAILABLE TOOLS ==\n{tools}\n\n\
          == HOW TO WORK (strategy) ==\n\
+         ADAPT TO COMPLEXITY:\n\
+         - SIMPLE task (a few steps like open/type/click): just DO it, fast, using a batch. No planning overhead.\n\
+         - COMPLEX task (many stages, multiple apps, conditional steps): FIRST think and lay out a short\n\
+           plan in your 'thought' (the stages), THEN execute stage by stage — batch the independent\n\
+           actions within a stage, and observe (ocr/find_text) between stages that depend on the result.\n\
+         WHEN STUCK OR UNSURE — ASK, DON'T FAIL: If you can't find an element after ~2 tries, or the\n\
+         instruction is ambiguous, or you're missing info, or something looks wrong — do NOT give up with\n\
+         an error and do NOT guess blindly. Ask the user with {{\"question\":\"...\"}}. Asking is always\n\
+         better than failing or doing the wrong thing. Only report failure if the user declines to help.\n\
          You are taking over the user's PC AS-IS. First read CURRENT SYSTEM STATE (below the rules):\n\
          it lists the open windows, the focused window, and installed apps. Use it to decide:\n\
          - If the app/window you need is ALREADY OPEN → 'app focus' it (fast). Don't re-open.\n\
@@ -983,10 +1046,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 "step_num": step_num, "thought": "Waiting for your answer.",
                 "tool": null, "description": question, "success": true
             }));
+            live_set_question(&q_id, question);
             // Ask the user and wait for a TYPED answer (not just yes/no).
             let answer = get_permission_gate()
                 .request_answer(q_id, question.to_string(), &app)
                 .await;
+            live_clear_question();
             match answer {
                 Some(ans) => {
                     messages.push(ChatMessage { role: "assistant".to_string(), content: ai_response });
@@ -1154,6 +1219,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 "step_num": step_num, "thought": step_thought,
                 "tool": name, "description": outcome_text, "success": success
             }));
+            live_set_phase("working", &step_thought);
+            live_add_step(serde_json::json!({
+                "step_num": step_num, "thought": step_thought,
+                "tool": name, "description": outcome_text, "success": success
+            }));
 
             combined_output.push_str(&format!(
                 "[Action {}/{}: {}] {}\n",
@@ -1216,6 +1286,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
     // Emit completion / save memory
     if final_status == "completed" {
+        live_set_phase("success", &final_outcome);
         let _ = crate::ai::memory::add_mem0_memory(&instruction, &final_outcome, &user_id).await;
         let _ = app.emit("task:done", serde_json::json!({
             "task_id": task_id,
@@ -1235,7 +1306,9 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         }
     } else if final_status == "cancelled" {
         // agent:killed already emitted above
+        live_set_phase("idle", "");
     } else if final_status == "failed" {
+        live_set_phase("error", &final_outcome);
         // Briefly speak that it couldn't finish (also gated by the setting).
         let speak = crate::storage::sqlite::get_setting_internal("speak_results")
             .ok().flatten().map(|v| v != "false").unwrap_or(true);

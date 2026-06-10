@@ -150,6 +150,63 @@ export const FloatingOverlay: React.FC = () => {
     document.body.style.overflow = "hidden";
   }, []);
 
+  // ── Polling fallback (bulletproof) ────────────────────────────────────────
+  // Events to a secondary webview can be missed, leaving the panel empty/black.
+  // So we ALSO poll the backend's live state every 350ms and drive the UI from
+  // it. This guarantees the panel always reflects what the agent is doing.
+  const lastSeq = useRef<number>(-1);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await invoke<any>("get_live_state");
+        if (!alive || !s) return;
+        if (typeof s.seq === "number" && s.seq === lastSeq.current) return; // no change
+        lastSeq.current = s.seq;
+        const phase = s.phase as string;
+
+        if (phase === "idle") {
+          // Only hide if we aren't mid-question/approval driven by events.
+          setState((prev) => (prev === "question" || prev === "approval") ? prev : "idle");
+          return;
+        }
+        await show();
+        if (s.heard) setHeard(s.heard);
+        if (Array.isArray(s.steps)) {
+          setSteps(s.steps.map((st: any) => ({
+            step_num: st.step_num || 0,
+            thought: st.thought || "",
+            tool: st.tool || null,
+            description: st.description || "",
+            success: st.success !== false,
+            ts: st.step_num || 0,
+          })));
+        }
+        if (phase === "question" && s.question) {
+          setQuestion({ id: s.question_id, question: s.question });
+          setState("question");
+        } else if (phase === "success") {
+          setHeaderText(s.header || "Done.");
+          setState("success");
+          scheduleHide(5000);
+        } else if (phase === "error") {
+          setHeaderText(s.header || "Task failed.");
+          setState("error");
+          scheduleHide(6000);
+        } else if (phase === "working") {
+          setHeaderText(s.header || "Working…");
+          setState("working");
+        } else if (phase === "thinking") {
+          setHeaderText(s.header || "Planning…");
+          setState("thinking");
+        }
+      } catch (_) { /* backend not ready */ }
+    };
+    const id = setInterval(tick, 350);
+    tick();
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
   // Sync window height to card content height
   // The overlay window is a FIXED-SIZE panel that the card fills completely, so
   // there's no fragile per-frame resizing (which used to leave a tall black box).
