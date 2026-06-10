@@ -328,10 +328,47 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            app open name=spotify    (also: telegram, discord, netflix, teams, slack, zoom, vlc, etc.)\n\
            The launcher auto-discovers any installed app — Store apps, .exe apps, and PATH commands.\n\
            Just use the common everyday name. No need to know the exact exe path or package ID.\n\
+           IF ALREADY RUNNING: open will focus it immediately — no re-launch delay.\n\
            IF THE APP IS NOT INSTALLED: The tool returns an error saying so.\n\
              -> Tell the user clearly: 'X is not installed on your PC.'\n\
              -> Then ask: 'Would you like me to open the Microsoft Store or official website to download it?'\n\
              -> If yes: use open_url with the Store/download page URL.\n\
+         \n\
+         ════════════════════════════════════════════\n\
+         APP-SPECIFIC INTERACTION PATTERNS\n\
+         ════════════════════════════════════════════\n\
+         ▸ WHATSAPP / TELEGRAM / SIGNAL (send message to a contact):\n\
+           FAST METHOD — use WhatsApp Web instead of the desktop app:\n\
+             open_url url=https://web.whatsapp.com\n\
+             wait ms=4000  (WhatsApp Web loads slowly)\n\
+             Then: find_text 'Search or start' -> click -> type contact name -> wait 1000 -> find result -> click -> type message -> Enter\n\
+           DESKTOP METHOD:\n\
+             1. open whatsapp -> wait for window\n\
+             2. find_text 'Search or start a new chat' -> click that box\n\
+             3. keyboard type contact name (e.g. 'Som')\n\
+             4. wait ms=1000 (search results load)\n\
+             5. find_text '<contact name>' -> click the first result\n\
+             6. wait ms=500\n\
+             7. find_text 'Type a message' OR find_text 'Message' -> click it\n\
+             8. keyboard type the message text\n\
+             9. keyboard key=enter  (sends the message)\n\
+         \n\
+         ▸ GMAIL / OUTLOOK (send email):\n\
+           open_url url=https://mail.google.com  (or https://outlook.com)\n\
+           wait ms=3000\n\
+           find_text 'Compose' -> click -> type recipient, subject, body -> Send\n\
+         \n\
+         ▸ SPOTIFY (play music):\n\
+           open spotify -> find_text 'Search' -> click -> type song/artist -> Enter -> click result\n\
+         \n\
+         ▸ ANY CHAT APP — general pattern:\n\
+           1. Open app (already running = instant focus)\n\
+           2. find_text on the SEARCH BOX (every chat app has one)\n\
+           3. click it -> type the contact/group name\n\
+           4. wait for results -> click the matching contact\n\
+           5. find_text on the MESSAGE INPUT BOX at the bottom\n\
+           6. click it -> type message -> Enter\n\
+           CRITICAL: Always use find_text to locate elements. Never guess coordinates.\n\
          \n\
          == WORKED EXAMPLES ==\n\
          TASK: 'open notepad and write Hello World'\n\
@@ -361,6 +398,24 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            2 {{\"thought\":\"Wait\",\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":3000}}}}\n\
            3 {{\"thought\":\"Read page\",\"tool\":\"screen\",\"params\":{{\"action\":\"ocr\"}}}}\n\
            4 {{\"done\":true,\"result\":\"Your bio reads: <bio text from OCR>\"}}\n\
+         \n\
+         TASK: 'send a message to Som on WhatsApp saying Hello'\n\
+           1 {{\"thought\":\"Open WhatsApp Web (faster than desktop)\",\"tool\":\"app\",\"params\":{{\"action\":\"open_url\",\"url\":\"https://web.whatsapp.com\"}}}}\n\
+           2 {{\"thought\":\"Wait for load\",\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":4000}}}}\n\
+           3 {{\"thought\":\"Find search box\",\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"Search or start\"}}}}\n\
+           4 {{\"thought\":\"Click search box\",\"tool\":\"mouse\",\"params\":{{\"action\":\"click\",\"x\":<x>,\"y\":<y>}}}}\n\
+           5 {{\"thought\":\"Type contact name\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Som\"}}}}\n\
+           6 {{\"thought\":\"Wait for results\",\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":1000}}}}\n\
+           7 {{\"thought\":\"Find and click the contact\",\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"Som\"}}}}\n\
+           8 {{\"thought\":\"Click contact\",\"tool\":\"mouse\",\"params\":{{\"action\":\"click\",\"x\":<x>,\"y\":<y>}}}}\n\
+           9 {{\"thought\":\"Wait for chat to open\",\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":800}}}}\n\
+           10 {{\"thought\":\"Find message input\",\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"Type a message\"}}}}\n\
+           11 {{\"thought\":\"Click message box\",\"tool\":\"mouse\",\"params\":{{\"action\":\"click\",\"x\":<x>,\"y\":<y>}}}}\n\
+           12 {{\"thought\":\"Type message\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Hello\"}}}}\n\
+           13 {{\"thought\":\"Ask before sending\",\"tool\":null,\"params\":null}}\n\
+           NOTE: ALWAYS ask before sending: {{\"question\":\"Send 'Hello' to Som on WhatsApp? (yes/no)\"}}\n\
+           14 {{\"thought\":\"Send\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"key\",\"key\":\"enter\"}}}}\n\
+           15 {{\"done\":true,\"result\":\"Sent 'Hello' to Som on WhatsApp\"}}\n\
          \n\
          == VALID RESPONSE FORMATS ==\n\
          Tool call : {{\"thought\":\"one line why\",\"tool\":\"name\",\"params\":{{...}}}}\n\

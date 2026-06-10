@@ -353,35 +353,48 @@ fn launch_via_path(name: &str) -> anyhow::Result<u32> {
 
 /// Check if a Store app with the given PackageFamilyName is actually installed.
 /// Extracts the PFN from an AUMID (everything before the '!').
+/// Uses a simple in-process cache so the PowerShell check only runs ONCE per PFN per session.
 fn is_uwp_installed(aumid: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
     // AUMID format: PackageFamilyName!AppId
     let pfn = match aumid.split('!').next() {
-        Some(p) => p,
+        Some(p) => p.to_string(),
         None => return false,
     };
-    // Ask PowerShell — fast, definitive, no filesystem guessing.
+
+    // Return cached result immediately if we've checked before
+    if let Ok(map) = cache.lock() {
+        if let Some(&result) = map.get(&pfn) {
+            return result;
+        }
+    }
+
+    // PowerShell check — only runs once per PFN per session
     let script = format!(
-        "if (Get-AppxPackage -Name (Get-AppxPackage | Where-Object {{$_.PackageFamilyName -eq '{}' }} | Select-Object -First 1 -ExpandProperty Name) -ErrorAction SilentlyContinue) {{ 'yes' }} else {{ 'no' }}",
-        pfn.replace('\'', "")
-    );
-    // Faster alternative: just check if PFN exists in package list
-    let script2 = format!(
         "if (Get-AppxPackage | Where-Object {{$_.PackageFamilyName -eq '{}'}}) {{ Write-Output 'yes' }} else {{ Write-Output 'no' }}",
         pfn.replace('\'', "")
     );
-    match std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script2])
+    let result = match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
     {
         Ok(out) => {
             let s = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
             s == "yes"
         }
-        Err(_) => {
-            // If PowerShell fails, assume it might be installed and try anyway
-            true
-        }
+        Err(_) => true, // If PowerShell fails, assume installed and try anyway
+    };
+
+    // Cache the result
+    if let Ok(mut map) = cache.lock() {
+        map.insert(pfn, result);
     }
+    result
 }
 
 /// Launch a Store/UWP app by AUMID using `explorer.exe shell:AppsFolder\<AUMID>`.

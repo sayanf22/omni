@@ -61,37 +61,57 @@ impl Tool for AppTool {
         match action {
             "open" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for open action"))?;
+
+                // If the app is already running, just focus it — much faster than re-launching.
+                if let Ok(()) = focus_window_by_name(name) {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    return Ok(format!(
+                        "'{}' was already running and is now focused. \
+                         The window is ready — proceed with your next action.",
+                        name
+                    ));
+                }
+
+                // Launch the app
                 match launch_app_internal(name) {
                     Ok(pid) => {
-                        // Wait for the app window to be ready
-                        tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
-                        let _ = focus_window_by_name(name);
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        // Smart wait: poll for the window to appear instead of a fixed sleep.
+                        // Check every 400ms, up to 8 seconds total (UWP apps can be slow to render).
+                        let name_lower = name.to_lowercase();
+                        let mut focused = false;
+                        for _ in 0..20 {
+                            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                            if focus_window_by_name(name).is_ok()
+                                || focus_window_by_name(&name_lower).is_ok()
+                            {
+                                focused = true;
+                                break;
+                            }
+                        }
+                        if !focused {
+                            // Last-resort: try to bring any window with the name in the title
+                            let _ = focus_window_by_name(name);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                         Ok(format!(
-                            "Opened '{}' (PID {}). Window is focused and ready.",
+                            "Opened '{}' (PID {}). Window is ready. \
+                             IMPORTANT: Do NOT click the title bar or app chrome — click directly on \
+                             the content area (search box, text field, etc.) to interact with it.",
                             name, pid
                         ))
                     }
                     Err(e) => {
-                        let msg = e.to_string();
-                        // Propagate the error clearly so the AI can tell the user
-                        // and optionally offer to open the Store/download page.
-                        Err(anyhow::anyhow!(
-                            "Could not open '{}': {}",
-                            name, msg
-                        ))
+                        Err(anyhow::anyhow!("Could not open '{}': {}", name, e))
                     }
                 }
             }
             "open_url" => {
                 let url = params["url"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'url' for open_url action"))?;
-                // Validate URL has a scheme
                 let final_url = if url.starts_with("http://") || url.starts_with("https://") {
                     url.to_string()
                 } else {
                     format!("https://{}", url)
                 };
-                // Use Windows ShellExecute to open URL in default browser — works with any browser
                 let status = std::process::Command::new("cmd")
                     .args(["/c", "start", "", &final_url])
                     .status()
@@ -99,40 +119,35 @@ impl Tool for AppTool {
                 if !status.success() {
                     return Err(anyhow::anyhow!("cmd /c start failed for URL: {}", final_url));
                 }
-                // Give the browser time to open and start loading
                 tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                 Ok(format!(
                     "Opened '{}' in the default browser. \
-                     Wait a moment for the page to load, then use 'screen' ocr or screenshot to read it. \
-                     If the page isn't loaded yet, use app 'wait' with ms=2000.",
+                     Use 'screen' ocr or screenshot to read it once loaded. \
+                     Use app 'wait' with ms=2000 if the page isn't ready yet.",
                     final_url
                 ))
             }
             "focus" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for focus action"))?;
                 focus_window_by_name(name)?;
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                Ok(format!("Focused window matching '{}'. It is now the active window.", name))
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                Ok(format!("Focused '{}'. It is now the active window.", name))
             }
             "list" => {
                 let apps = list_running_apps_internal();
-                let result = serde_json::to_string_pretty(&apps)?;
-                Ok(result)
+                Ok(serde_json::to_string_pretty(&apps)?)
             }
             "close" => {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for close action"))?;
                 let mut exe_name = name.to_string();
-                if !exe_name.ends_with(".exe") {
-                    exe_name.push_str(".exe");
-                }
+                if !exe_name.ends_with(".exe") { exe_name.push_str(".exe"); }
                 let output = std::process::Command::new("taskkill")
                     .args(&["/F", "/IM", &exe_name])
                     .output()?;
                 if output.status.success() {
-                    Ok(format!("Closed application '{}'", exe_name))
+                    Ok(format!("Closed '{}'", exe_name))
                 } else {
-                    let err = String::from_utf8_lossy(&output.stderr);
-                    Err(anyhow::anyhow!("Failed to close app: {}", err))
+                    Err(anyhow::anyhow!("Failed to close '{}': {}", exe_name, String::from_utf8_lossy(&output.stderr)))
                 }
             }
             "wait" => {
