@@ -227,6 +227,7 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
                 // Release any input block IMMEDIATELY so the user regains control,
                 // then cancel the running task.
                 crate::automation::process::set_user_input_blocked(false);
+                crate::automation::takeover::stop();
                 let _ = cancel_task();
                 let _ = app.emit("agent:killed", serde_json::json!({}));
                 *last_press = None;

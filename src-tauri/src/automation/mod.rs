@@ -3,6 +3,7 @@ pub mod ocr;
 pub mod uia;
 pub mod input;
 pub mod process;
+pub mod takeover;
 
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 

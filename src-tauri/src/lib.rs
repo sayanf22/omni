@@ -100,6 +100,9 @@ pub fn run() {
         )
         .manage(SidecarState::default())
         .setup(|app| {
+            // Provide the takeover module with an app handle (for events + escape).
+            crate::automation::takeover::set_app(app.handle().clone());
+
             // Register Ctrl+Space and Ctrl+Shift+Space global shortcuts
             if let Err(e) = agent::hotkeys::register_core_shortcuts(&app.handle()) {
                 tracing::error!("Failed to register global shortcuts: {:?}", e);

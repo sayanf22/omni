@@ -28,6 +28,44 @@ fn key_is_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
+/// Find an active OpenAI model's API key — one OpenAI key powers chat + STT + TTS.
+fn openai_key() -> Option<String> {
+    let models = crate::storage::sqlite::get_custom_models_db().ok()?;
+    for m in models {
+        if m.is_active && m.provider_type.to_lowercase() == "openai" {
+            if let Ok(Some(k)) = crate::storage::keychain::get_key(&m.id) {
+                if !k.is_empty() && !k.contains('•') {
+                    return Some(k);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Transcribe a WAV with OpenAI Whisper (whisper-1). Uses the same OpenAI key
+/// the user already configured for chat — no separate voice key needed.
+async fn try_openai_whisper(wav_path: &PathBuf, api_key: &str) -> Option<String> {
+    let bytes = std::fs::read(wav_path).ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25)).build().ok()?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("audio.wav").mime_str("audio/wav").ok()?;
+    let form = reqwest::multipart::Form::new()
+        .text("model", "whisper-1")
+        .text("language", "en")
+        .part("file", part);
+    let resp = client.post("https://api.openai.com/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .multipart(form).send().await.ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!("OpenAI Whisper STT error: {}", resp.status());
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json["text"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 // ── Global recording state ────────────────────────────────────────────────────
 
 struct RecordingState {
@@ -341,6 +379,12 @@ pub async fn process_and_transcribe(samples: Vec<f32>, sample_rate: u32, channel
 
     let result = if let Some(text) = try_local_whisper(&temp_path).await {
         tracing::info!("Local Whisper STT: '{}'", text);
+        text
+    } else if let Some(text) = {
+        // OpenAI Whisper using the user's existing OpenAI key (one key does it all)
+        if let Some(k) = openai_key() { try_openai_whisper(&temp_path, &k).await } else { None }
+    } {
+        tracing::info!("OpenAI Whisper STT: '{}'", text);
         text
     } else {
         let key_opt = get_key("elevenlabs").ok().flatten()

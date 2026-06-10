@@ -141,6 +141,7 @@ export const FloatingOverlay: React.FC = () => {
   const [question, setQuestion] = useState<{ id: string; question: string } | null>(null);
   const [answer, setAnswer] = useState("");
   const [audioLevel, setAudioLevel] = useState(0); // 0..1 live mic level for the waveform
+  const [controlling, setControlling] = useState(false); // agent has taken over input
   const cardRef = useRef<HTMLDivElement>(null);
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -194,6 +195,10 @@ export const FloatingOverlay: React.FC = () => {
       cleanups.push(await listen<number>("voice:level", (e) => {
         setAudioLevel(typeof e.payload === "number" ? e.payload : 0);
       }));
+
+      // Takeover state — agent has blocked physical input
+      cleanups.push(await listen("takeover:started", () => setControlling(true)));
+      cleanups.push(await listen("takeover:ended", () => setControlling(false)));
 
       // Mic stop
       cleanups.push(await listen("hotkey:mic_stop", () => {
@@ -349,6 +354,32 @@ export const FloatingOverlay: React.FC = () => {
         style={{ ...glassCard, width: "100%" }}
       >
         <div style={glassInner}>
+
+          {/* ── "Agent is controlling" banner ──────────────────────────────── */}
+          {controlling && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "7px 12px",
+              background: "linear-gradient(135deg, rgba(248,113,113,0.18), rgba(168,85,247,0.12))",
+              borderBottom: "1px solid rgba(248,113,113,0.25)",
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%", background: "#f87171",
+                boxShadow: "0 0 8px #f87171", flexShrink: 0,
+                animation: "ompulse 1.4s ease-in-out infinite",
+              }} />
+              <span style={{ color: "#fca5a5", fontSize: 10.5, fontWeight: 700, flex: 1 }}>
+                Agent is controlling your PC
+              </span>
+              <span style={{
+                color: "rgba(255,255,255,0.55)", fontSize: 9, fontWeight: 600,
+                padding: "2px 6px", borderRadius: 6,
+                background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)",
+              }}>
+                Esc Esc to stop
+              </span>
+            </div>
+          )}
 
           {/* ── Header bar ─────────────────────────────────────────────────── */}
           <div style={{

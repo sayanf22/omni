@@ -259,6 +259,15 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         let _ = overlay.show();
     }
 
+    // ── Takeover: block the user's physical mouse/keyboard so they don't fight
+    // the agent. The agent's own synthetic input still works. Double-Esc returns
+    // control. Gated by the takeover_mode setting (default ON).
+    let takeover_on = crate::storage::sqlite::get_setting_internal("takeover_mode")
+        .ok().flatten().map(|v| v != "false").unwrap_or(true);
+    if takeover_on {
+        crate::automation::takeover::start();
+    }
+
     // Determine task type + check vision availability
     let task_type = detect_task_type(&instruction);
     let tools = get_all_tools();
@@ -905,24 +914,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                     break 'main;
                 }
 
-                // ── Takeover: block physical user input during the actual
-                // mouse/keyboard action so the user can't interfere with the
-                // agent's clicks/typing. Unblocked immediately after, so between
-                // steps the user can still hit Stop or the Esc kill-switch.
-                let block_for_action = matches!(name, "mouse" | "keyboard");
-                if block_for_action {
-                    crate::automation::process::set_user_input_blocked(true);
-                }
-
                 // Execute tool
                 let (outcome_text, success) = match tool.execute(tool_params.clone()).await {
                     Ok(out) => (out, true),
                     Err(e) => (format!("Tool '{}' failed: {}", name, e), false),
                 };
-
-                if block_for_action {
-                    crate::automation::process::set_user_input_blocked(false);
-                }
 
                 // ── Track real interactions (for the premature-done guard) ──────
                 if success {
@@ -1007,9 +1003,10 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         step_num += 1;
     }
 
-    // Safety: always release any input block when the task loop ends, no matter
-    // which exit path was taken (done / failed / cancelled / max steps).
+    // Safety: always release any input block + takeover when the task loop ends,
+    // no matter which exit path was taken (done / failed / cancelled / max steps).
     crate::automation::process::set_user_input_blocked(false);
+    crate::automation::takeover::stop();
 
     // Max steps exceeded
     if step_num > max_steps && final_status == "completed" {
