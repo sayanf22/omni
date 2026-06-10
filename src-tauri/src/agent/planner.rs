@@ -179,6 +179,21 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         system_prompt.push_str(&format!("\n\nRelevant context from past tasks:\n{}", memories));
     }
 
+    // Inject user-defined custom skills (written in the Skills page)
+    if let Ok(Some(skills_json)) = crate::storage::sqlite::get_setting_internal("custom_skills_json") {
+        if let Ok(skills) = serde_json::from_str::<Vec<serde_json::Value>>(&skills_json) {
+            if !skills.is_empty() {
+                let mut skill_text = String::from("\n\nUser-defined skills and preferences (ALWAYS follow these):\n");
+                for skill in &skills {
+                    if let (Some(name), Some(instructions)) = (skill["name"].as_str(), skill["instructions"].as_str()) {
+                        skill_text.push_str(&format!("• {}: {}\n", name, instructions));
+                    }
+                }
+                system_prompt.push_str(&skill_text);
+            }
+        }
+    }
+
     let mut messages = vec![
         ChatMessage { role: "system".to_string(), content: system_prompt },
         ChatMessage { role: "user".to_string(), content: format!("Task: {}", instruction) },

@@ -670,34 +670,58 @@ export const Settings: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     const parts: string[] = [];
+    // Always collect modifiers first (canonical order: Ctrl, Shift, Alt, Win)
     if (e.ctrlKey)  parts.push("Ctrl");
     if (e.shiftKey) parts.push("Shift");
     if (e.altKey)   parts.push("Alt");
     if (e.metaKey)  parts.push("Win");
-    if (!["Control","Shift","Alt","Meta"].includes(e.key)) {
-      parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
+
+    // Only add the non-modifier key — never add modifier key names as the "key"
+    const modifierKeys = ["Control", "Shift", "Alt", "Meta", "CapsLock", "NumLock", "ScrollLock"];
+    if (!modifierKeys.includes(e.key)) {
+      // Normalize special key names to what the Rust parser expects
+      const keyMap: Record<string, string> = {
+        " ": "Space", "ArrowUp": "Up", "ArrowDown": "Down",
+        "ArrowLeft": "Left", "ArrowRight": "Right",
+        "Enter": "Enter", "Backspace": "Backspace", "Delete": "Delete",
+        "Escape": "Escape", "Tab": "Tab", "Home": "Home", "End": "End",
+        "PageUp": "PageUp", "PageDown": "PageDown", "Insert": "Insert",
+      };
+      const normalizedKey = keyMap[e.key] || (e.key.length === 1 ? e.key.toUpperCase() : e.key);
+      parts.push(normalizedKey);
     }
-    setPressedKeys(parts);
+    if (parts.length > 0) setPressedKeys(parts);
   };
 
   const handleHotkeyKeyUp = async () => {
-    if (!recordingHotkey || pressedKeys.length < 2) {
-      setHotkeyMsg({ text: "Need modifier (Ctrl/Shift/Alt) + a key.", success: false });
+    if (!recordingHotkey) return;
+    // Need at least one modifier AND one non-modifier key
+    const modifiers = ["Ctrl", "Shift", "Alt", "Win"];
+    const nonModifiers = pressedKeys.filter(k => !modifiers.includes(k));
+    const hasMod = pressedKeys.some(k => modifiers.includes(k));
+
+    if (!hasMod || nonModifiers.length === 0) {
+      setHotkeyMsg({ text: "Need a modifier (Ctrl / Shift / Alt) + a key. Win key alone is not supported.", success: false });
       setRecordingHotkey(null);
       setPressedKeys([]);
       return;
     }
-    const hotkeyStr = pressedKeys.join("+");
+
+    // Build canonical hotkey string: modifiers first, then the key
+    const orderedMods = ["Ctrl", "Shift", "Alt", "Win"].filter(m => pressedKeys.includes(m));
+    const hotkeyStr = [...orderedMods, ...nonModifiers].join("+");
     const type = recordingHotkey;
     setRecordingHotkey(null);
     setPressedKeys([]);
+
     try {
       await invoke("set_hotkey", { hotkeyType: type, hotkeyValue: hotkeyStr });
-      if (type === "mic")  setMicHotkey(hotkeyStr);
-      else                  setTextHotkey(hotkeyStr);
-      setHotkeyMsg({ text: `${type === "mic" ? "Mic" : "Text"} hotkey → ${hotkeyStr}`, success: true });
+      if (type === "mic") setMicHotkey(hotkeyStr);
+      else setTextHotkey(hotkeyStr);
+      setHotkeyMsg({ text: `✓ ${type === "mic" ? "Voice" : "Text"} hotkey set to: ${hotkeyStr}`, success: true });
     } catch (e: any) {
-      setHotkeyMsg({ text: e?.toString() || "Failed.", success: false });
+      const msg = e?.toString() || "Failed.";
+      setHotkeyMsg({ text: `Failed: ${msg}. Try a different combination (e.g. Ctrl+Shift+A).`, success: false });
     }
   };
 

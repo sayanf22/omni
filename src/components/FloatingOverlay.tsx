@@ -1,8 +1,17 @@
+/**
+ * FloatingOverlay — top-right status card + approval dialog
+ *
+ * Shows what the agent is doing in a compact card pinned to the top-right.
+ * On approval requests: expands to show full action description + Deny/Approve.
+ * Auto-hides when idle. The textinput window is hidden once a task starts.
+ */
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Mic, Loader2, CheckCircle2, AlertCircle, X, ShieldAlert } from "lucide-react";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { motion, AnimatePresence } from "framer-motion";
+import { Mic, Loader2, CheckCircle2, AlertCircle, X, ShieldAlert, Square } from "lucide-react";
 
 type OverlayState = "idle" | "listening" | "thinking" | "working" | "approval" | "success" | "error";
 
@@ -14,118 +23,108 @@ interface PermissionRequest {
   preview: string | null;
 }
 
-const showWindow = async () => {
-  try {
-    await getCurrentWindow().show();
-    await getCurrentWindow().setFocus();
-  } catch (e) {
-    console.error("Failed to show overlay window:", e);
-  }
+const hideWindow = async () => {
+  try { await getCurrentWindow().hide(); } catch (_) {}
 };
 
-const hideWindow = async () => {
+// Hide the text input floating window once a task has been dispatched
+const hideTextInput = async () => {
   try {
-    await getCurrentWindow().hide();
-  } catch (e) {
-    console.error("Failed to hide overlay window:", e);
-  }
+    const w = new WebviewWindow("textinput");
+    await w.hide();
+  } catch (_) {}
 };
 
 export const FloatingOverlay: React.FC = () => {
   const [state, setState] = useState<OverlayState>("idle");
   const [text, setText] = useState("");
+  const [stepNum, setStepNum] = useState(0);
   const [permissionReq, setPermissionReq] = useState<PermissionRequest | null>(null);
 
   useEffect(() => {
     const cleanups: Array<() => void> = [];
 
-    async function setupListeners() {
-      cleanups.push(
-        await listen("hotkey:mic_start", async () => {
-          await showWindow();
-          setState("listening");
-          setText("Listening...");
-        })
-      );
+    (async () => {
+      // ── Mic start ──────────────────────────────────────────────────────────
+      cleanups.push(await listen("hotkey:mic_start", async () => {
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+        setState("listening");
+        setText("Listening…");
+      }));
 
-      cleanups.push(
-        await listen("hotkey:mic_stop", () => {
-          setState("thinking");
-          setText("Processing audio...");
-        })
-      );
+      // ── Mic stop (processing) ─────────────────────────────────────────────
+      cleanups.push(await listen("hotkey:mic_stop", () => {
+        setState("thinking");
+        setText("Processing…");
+      }));
 
-      cleanups.push(
-        await listen<any>("task:step", async (event) => {
-          await showWindow();
-          setState("working");
-          setText(event.payload.thought || event.payload.description || "Thinking...");
-        })
-      );
-
-      cleanups.push(
-        await listen<PermissionRequest>("permission:request", async (event) => {
-          await showWindow();
-          setState("approval");
-          setPermissionReq(event.payload);
-        })
-      );
-
-      cleanups.push(
-        await listen("task:done", async () => {
-          setState("success");
-          setText("Task Completed!");
-          setTimeout(async () => {
-            setState("idle");
-            await hideWindow();
-          }, 2500);
-        })
-      );
-
-      cleanups.push(
-        await listen<any>("task:failed", async (event) => {
+      // ── Voice transcript received — hide textinput, show overlay ──────────
+      cleanups.push(await listen<{ text: string }>("voice:transcript", async (event) => {
+        await hideTextInput();
+        await getCurrentWindow().show();
+        setState("thinking");
+        setText(`"${event.payload.text}"`);
+        try {
+          invoke("run_task", { instruction: event.payload.text, userId: "" });
+        } catch (e: any) {
           setState("error");
-          setText(event.payload?.error || "Task Failed.");
-          setTimeout(async () => {
-            setState("idle");
-            await hideWindow();
-          }, 3000);
-        })
-      );
+          setText(e?.toString() || "Failed to start task.");
+        }
+      }));
 
-      cleanups.push(
-        await listen("agent:killed", async () => {
+      // ── Task started ──────────────────────────────────────────────────────
+      cleanups.push(await listen("task:started", async () => {
+        await hideTextInput();
+        await getCurrentWindow().show();
+        setState("thinking");
+        setStepNum(0);
+      }));
+
+      // ── Step update ───────────────────────────────────────────────────────
+      cleanups.push(await listen<any>("task:step", async (event) => {
+        await getCurrentWindow().show();
+        setState("working");
+        setStepNum(event.payload.step_num || 0);
+        setText(event.payload.thought || event.payload.description || "Working…");
+      }));
+
+      // ── Permission request ────────────────────────────────────────────────
+      cleanups.push(await listen<PermissionRequest>("permission:request", async (event) => {
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+        setState("approval");
+        setPermissionReq(event.payload);
+      }));
+
+      // ── Done ──────────────────────────────────────────────────────────────
+      cleanups.push(await listen("task:done", async () => {
+        setState("success");
+        setText("Done!");
+        setTimeout(async () => {
           setState("idle");
           await hideWindow();
-        })
-      );
+        }, 2500);
+      }));
 
-      // voice:transcript — Rust transcribed speech via STT; auto-trigger the task
-      cleanups.push(
-        await listen<{ text: string }>("voice:transcript", async (event) => {
-          const transcript = event.payload.text;
-          await showWindow();
-          setState("thinking");
-          setText(`"${transcript}"`);
-          try {
-            await invoke("run_task", { instruction: transcript, userId: "" });
-          } catch (e: any) {
-            setState("error");
-            setText(e?.toString() || "Failed to start task.");
-            setTimeout(async () => {
-              setState("idle");
-              await hideWindow();
-            }, 3000);
-          }
-        })
-      );
-    }
+      // ── Failed ────────────────────────────────────────────────────────────
+      cleanups.push(await listen<any>("task:failed", async (event) => {
+        setState("error");
+        setText(event.payload?.error || "Task failed.");
+        setTimeout(async () => {
+          setState("idle");
+          await hideWindow();
+        }, 4000);
+      }));
 
-    setupListeners();
+      // ── Killed ────────────────────────────────────────────────────────────
+      cleanups.push(await listen("agent:killed", async () => {
+        setState("idle");
+        await hideWindow();
+      }));
+    })();
 
-    return () => {
-      cleanups.forEach((fn) => fn());
-    };
+    return () => cleanups.forEach((fn) => fn());
   }, []);
 
   const handleApprove = async (approved: boolean) => {
@@ -134,144 +133,167 @@ export const FloatingOverlay: React.FC = () => {
       await invoke("approve_request", { id: permissionReq.id, approved });
       setPermissionReq(null);
       setState("working");
-      setText("Resuming task...");
-    } catch (e) {
-      console.error("Failed to respond to permission gate", e);
-    }
+      setText("Resuming…");
+    } catch (e) { console.error(e); }
   };
 
-  const handleCancelTask = async () => {
-    try {
-      await invoke("cancel_task");
-      setState("idle");
-      await hideWindow();
-    } catch (e) {
-      console.error(e);
-    }
+  const handleCancel = async () => {
+    try { await invoke("cancel_task"); } catch (_) {}
+    setState("idle");
+    await hideWindow();
   };
 
   if (state === "idle") return null;
 
+  // ── Determine height based on state ────────────────────────────────────────
+  // The overlay window is 320px wide, positioned top-right.
+  // We render a card that fills it, expanding/collapsing via AnimatePresence.
+
   return (
-    <div className="w-full h-full bg-bg/75 backdrop-blur-md border border-border rounded-xl p-4 flex items-center justify-between text-text select-none shadow-2xl overflow-hidden">
-      {state === "listening" && (
-        <div className="flex items-center gap-3.5 w-full">
-          <div className="w-9 h-9 rounded-full bg-text/10 border border-border flex items-center justify-center text-text shrink-0 relative">
-            <span className="absolute inset-0 rounded-full bg-text/5 animate-ping" />
-            <Mic className="w-4 h-4" />
-          </div>
-          <div className="flex-1 space-y-1">
-            <span className="text-[9px] font-bold text-text-muted uppercase tracking-wider font-mono">Voice Capture Active</span>
-            <div className="flex items-center gap-1">
-              {[12, 24, 16, 28, 14, 20, 8, 18].map((h, i) => (
-                <div
-                  key={i}
-                  className="bg-text rounded-full animate-bounce"
-                  style={{ width: "3px", height: `${h}px`, animationDelay: `${i * 80}ms`, animationDuration: "750ms" }}
-                />
-              ))}
-              <span className="text-xs font-semibold pl-2 text-text-secondary">Hold Ctrl+Shift+A to speak</span>
+    <AnimatePresence>
+      <motion.div
+        key={state}
+        initial={{ opacity: 0, y: -8, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -8, scale: 0.97 }}
+        transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+        style={{
+          width: "100%",
+          background: "#111113",
+          border: state === "approval" ? "1px solid rgba(239,68,68,0.45)" : "1px solid #232327",
+          borderRadius: "14px",
+          overflow: "hidden",
+          boxShadow: "0 16px 40px rgba(0,0,0,0.6), 0 4px 12px rgba(0,0,0,0.4)",
+          userSelect: "none",
+        }}
+      >
+        {/* ── Listening ──────────────────────────────────────────────────────── */}
+        {state === "listening" && (
+          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ position: "relative", width: 32, height: 32, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "rgba(255,255,255,0.04)", animation: "ompulse 1.5s ease-out infinite" }} />
+              <Mic style={{ width: 14, height: 14, color: "#f4f4f5" }} />
+            </div>
+            <div>
+              <p style={{ color: "#f4f4f5", fontSize: 12, fontWeight: 700 }}>Listening…</p>
+              <p style={{ color: "#52525B", fontSize: 10 }}>Release key when done speaking</p>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {state === "thinking" && (
-        <div className="flex items-center gap-3 w-full">
-          <div className="w-8 h-8 rounded-full bg-accent-dim/30 border border-accent/35 flex items-center justify-center text-accent shrink-0">
-            <Loader2 className="w-4 h-4 animate-spin" />
-          </div>
-          <div>
-            <span className="text-[10px] font-bold text-accent uppercase tracking-wider">Cognitive Planner</span>
-            <p className="text-xs font-semibold text-text-secondary mt-0.5">{text}</p>
-          </div>
-        </div>
-      )}
-
-      {state === "working" && (
-        <div className="flex items-center justify-between w-full gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-accent-dim/30 border border-accent/35 flex items-center justify-center text-accent shrink-0">
-              <Loader2 className="w-4 h-4 animate-spin" />
+        {/* ── Thinking ───────────────────────────────────────────────────────── */}
+        {state === "thinking" && (
+          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Loader2 style={{ width: 13, height: 13, color: "#818CF8", animation: "omspin 0.8s linear infinite" }} />
             </div>
-            <div className="min-w-0">
-              <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider">Agent Executing</span>
-              <p className="text-xs font-semibold text-text-secondary truncate mt-0.5 max-w-[170px]">{text}</p>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ color: "#818CF8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Planning</p>
+              <p style={{ color: "#a1a1aa", fontSize: 11, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text || "Analyzing task…"}</p>
             </div>
-          </div>
-          <button
-            onClick={handleCancelTask}
-            className="p-1.5 bg-error-dim/20 hover:bg-error-dim/40 text-error border border-error/30 rounded-md text-xs font-bold transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {state === "approval" && permissionReq && (
-        <div className="flex items-center justify-between w-full gap-4">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-error-dim/30 border border-error/35 flex items-center justify-center text-error shrink-0 animate-pulse">
-              <ShieldAlert className="w-4 h-4" />
-            </div>
-            <div className="min-w-0 leading-tight">
-              <span className="text-[9px] font-bold text-error uppercase tracking-wider">Risk Permission Required</span>
-              <p className="text-xs font-bold text-text truncate mt-0.5 max-w-[130px]">{permissionReq.description}</p>
-            </div>
-          </div>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => handleApprove(false)}
-              className="px-2.5 py-1.5 bg-surface3 border border-border hover:border-border-light text-text text-[10px] font-bold rounded"
-            >
-              Deny
-            </button>
-            <button
-              onClick={() => handleApprove(true)}
-              className="px-2.5 py-1.5 bg-success hover:bg-success/80 text-bg text-[10px] font-bold rounded"
-            >
-              Approve
+            <button onClick={handleCancel} style={{ padding: 4, background: "transparent", border: "none", color: "#52525B", cursor: "pointer", borderRadius: 6 }} title="Cancel">
+              <X style={{ width: 12, height: 12 }} />
             </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {state === "success" && (
-        <div className="flex items-center gap-3 w-full">
-          <div className="w-8 h-8 rounded-full bg-success/20 border border-success/35 flex items-center justify-center text-success shrink-0">
-            <CheckCircle2 className="w-4 h-4" />
+        {/* ── Working ────────────────────────────────────────────────────────── */}
+        {state === "working" && (
+          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Loader2 style={{ width: 13, height: 13, color: "#818CF8", animation: "omspin 0.8s linear infinite" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                <span style={{ color: "#f4f4f5", fontSize: 11, fontWeight: 700 }}>Step {stepNum}</span>
+                <span style={{ color: "#3f3f46", fontSize: 10 }}>executing</span>
+              </div>
+              <p style={{ color: "#a1a1aa", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text}</p>
+            </div>
+            <button onClick={handleCancel} style={{ flexShrink: 0, padding: "5px 8px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, color: "#ef4444", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+              <Square style={{ width: 9, height: 9, fill: "#ef4444" }} /> Stop
+            </button>
           </div>
-          <div>
-            <span className="text-[10px] font-bold text-success uppercase tracking-wider">Success</span>
-            <p className="text-xs font-semibold text-text-secondary mt-0.5">{text}</p>
-          </div>
-        </div>
-      )}
+        )}
 
-      {state === "error" && (
-        <div className="flex items-center justify-between w-full gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-error-dim/30 border border-error/35 flex items-center justify-center text-error shrink-0">
-              <AlertCircle className="w-4 h-4" />
+        {/* ── Approval ───────────────────────────────────────────────────────── */}
+        {state === "approval" && permissionReq && (
+          <div style={{ padding: "12px 14px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
+              <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.35)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                <ShieldAlert style={{ width: 13, height: 13, color: "#ef4444" }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Permission Required</p>
+                <p style={{ color: "#f4f4f5", fontSize: 12, fontWeight: 600, lineHeight: 1.4, wordBreak: "break-word" }}>
+                  {permissionReq.description}
+                </p>
+                {permissionReq.tool && (
+                  <span style={{ display: "inline-block", marginTop: 6, padding: "2px 7px", background: "#1e1e22", border: "1px solid #2e2e34", borderRadius: 6, color: "#71717A", fontSize: 10, fontFamily: "monospace" }}>
+                    {permissionReq.tool} → {permissionReq.action}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="min-w-0">
-              <span className="text-[10px] font-bold text-error uppercase tracking-wider">Error Encountered</span>
-              <p className="text-xs font-semibold text-text-secondary truncate mt-0.5 max-w-[180px]">{text}</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => handleApprove(false)}
+                style={{ flex: 1, padding: "7px 0", background: "#1e1e22", border: "1px solid #2e2e34", borderRadius: 9, color: "#f4f4f5", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Deny
+              </button>
+              <button
+                onClick={() => handleApprove(true)}
+                style={{ flex: 1, padding: "7px 0", background: "#16a34a", border: "1px solid rgba(22,163,74,0.6)", borderRadius: 9, color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Approve
+              </button>
             </div>
           </div>
-          <button
-            onClick={async () => {
-              setState("idle");
-              await hideWindow();
-            }}
-            className="text-text-muted hover:text-text"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* ── Success ────────────────────────────────────────────────────────── */}
+        {state === "success" && (
+          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <CheckCircle2 style={{ width: 13, height: 13, color: "#10b981" }} />
+            </div>
+            <div>
+              <p style={{ color: "#10b981", fontSize: 12, fontWeight: 700 }}>Task completed</p>
+              <p style={{ color: "#52525B", fontSize: 10, marginTop: 1 }}>Auto-closing in 2s…</p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Error ──────────────────────────────────────────────────────────── */}
+        {state === "error" && (
+          <div style={{ padding: "12px 14px", display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+              <AlertCircle style={{ width: 13, height: 13, color: "#ef4444" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ color: "#ef4444", fontSize: 12, fontWeight: 700, marginBottom: 2 }}>Error</p>
+              <p style={{ color: "#a1a1aa", fontSize: 11, wordBreak: "break-word", lineHeight: 1.4 }}>{text}</p>
+            </div>
+            <button onClick={async () => { setState("idle"); await hideWindow(); }} style={{ padding: 4, background: "transparent", border: "none", color: "#52525B", cursor: "pointer", borderRadius: 6, flexShrink: 0 }}>
+              <X style={{ width: 12, height: 12 }} />
+            </button>
+          </div>
+        )}
+      </motion.div>
+    </AnimatePresence>
   );
 };
 
 export default FloatingOverlay;
+
+// Styles injected for overlay-specific animations
+const style = document.createElement("style");
+style.textContent = `
+  @keyframes omspin  { to { transform: rotate(360deg); } }
+  @keyframes ompulse { 0%,100%{opacity:0.4;transform:scale(1)} 50%{opacity:0;transform:scale(1.8)} }
+`;
+if (typeof document !== "undefined" && !document.getElementById("omni-overlay-styles")) {
+  style.id = "omni-overlay-styles";
+  document.head.appendChild(style);
+}
