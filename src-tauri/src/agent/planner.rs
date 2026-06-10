@@ -303,9 +303,36 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
     // Build the production-grade system prompt.
     // Use raw string to avoid escaping hell with special characters.
-    // Named arguments: screen_context, reasoning_note, tools, max_steps.
     let prompt_tools = serde_json::to_string_pretty(&tools_desc).unwrap_or_default();
     let max_s = max_steps_const();
+
+    // ── Confirmation policy (configurable) ──────────────────────────────────
+    // Setting "confirm_before_send": "always" | "sensitive" (default) | "never".
+    // By default the agent does NOT pester for routine sends (e.g. a normal
+    // WhatsApp message the user asked to send) — it only confirms genuinely
+    // high-consequence / irreversible actions.
+    let confirm_mode = crate::storage::sqlite::get_setting_internal("confirm_before_send")
+        .ok().flatten().unwrap_or_else(|| "sensitive".to_string());
+    let confirm_policy = match confirm_mode.as_str() {
+        "always" =>
+            "CONFIRM BEFORE SENDING: Before sending ANY message, email, post, or comment, \
+             output {{\"question\":\"Confirm: <exact action>?\"}} and wait for approval. \
+             ALSO always confirm deleting files, payments, or other irreversible actions.",
+        "never" =>
+            "ACT DIRECTLY: The user trusts you to act without confirmation. Just do what was \
+             asked — send messages, fill forms, click — WITHOUT asking. \
+             The ONLY exception: truly destructive/irreversible actions (deleting many files, \
+             payments, factory-reset-level changes) — for those, confirm with {{\"question\":\"...\"}}.",
+        _ /* sensitive (default) */ =>
+            "ASK ONLY WHEN IT MATTERS: Do routine actions DIRECTLY without asking — sending a \
+             normal chat message the user asked you to send (WhatsApp, etc.), searching, opening \
+             apps, filling a form, clicking. Do NOT pester the user for these. \
+             ONLY pause with {{\"question\":\"Confirm: <exact action>?\"}} for HIGH-CONSEQUENCE or \
+             IRREVERSIBLE actions: deleting files/data, making a payment/purchase, posting \
+             PUBLICLY, emailing/messaging MANY recipients, sending something that looks sensitive \
+             (passwords, money, legal), or system-level changes. When the message content the user \
+             gave you is clearly routine, JUST SEND IT.",
+    };
 
     let mut system_prompt = format!(
         "You are Omni, an autonomous Windows desktop agent. You control a REAL PC.\n\
@@ -342,11 +369,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                maximize it, then continue. The CURRENT SYSTEM STATE list shows what is open.\n\
                If the right app isn't open at all, open it. NEVER abandon the task just because\n\
                a window wasn't focused — recover and keep going.\n\
-         6. ASK BEFORE DESTRUCTIVE ACTIONS.\n\
-            Any action that sends, posts, deletes, purchases, or is irreversible:\n\
-            output {{\"question\":\"Confirm: <exact action>?\"}} and wait for user approval.\n\
-            Think about CONSEQUENCES first — deleting files, sending a message/email/post,\n\
-            making a payment, closing unsaved work. When unsure, ASK rather than guess.\n\
+         6. {confirm_policy}\n\
          6b. SELF-CORRECT — observe, then act (do not repeat blindly).\n\
             Before re-doing an action, READ the screen (ocr/find_text/screenshot) to see what\n\
             actually happened. If you already typed text, do NOT type it again — verify it landed.\n\
@@ -425,7 +448,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
              7. app wait ms=600\n\
              8. find_text 'Type a message' -> click the message box\n\
              9. keyboard type the message\n\
-             10. (ask the user to confirm before sending) -> keyboard key=enter\n\
+             10. press keyboard key=enter to send (only confirm first if the message is sensitive/important)\n\
            ONLY use WhatsApp Web (open_url web.whatsapp.com) if the desktop app is NOT installed.\n\
          \n\
          ▸ GMAIL / OUTLOOK (send email):\n\
@@ -499,6 +522,7 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         rn = reasoning_note,
         tools = prompt_tools,
         max_s = max_s,
+        confirm_policy = confirm_policy,
     );
 
     // ── Injection defense: append security policy to system prompt ──────────

@@ -4,6 +4,29 @@
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use crate::storage::keychain::get_key;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+/// Resolve the main (non-modifier) virtual-key code of the configured mic hotkey
+/// so we can detect when the user releases it (walkie-talkie). Defaults to 'A'.
+fn mic_main_vk() -> Option<i32> {
+    let hk = crate::storage::sqlite::get_setting_internal("hotkey_mic")
+        .ok().flatten().unwrap_or_else(|| "Ctrl+Shift+A".to_string());
+    let last = hk.split('+').map(|s| s.trim()).filter(|s| {
+        let l = s.to_lowercase();
+        l != "ctrl" && l != "control" && l != "shift" && l != "alt" && l != "win" && l != "meta" && l != "super"
+    }).last()?;
+    let up = last.to_uppercase();
+    let bytes = up.as_bytes();
+    if bytes.len() == 1 && bytes[0].is_ascii_alphanumeric() {
+        return Some(bytes[0] as i32); // 'A'-'Z' and '0'-'9' map directly to VK codes
+    }
+    Some(0x41) // fallback: 'A'
+}
+
+/// Is the given virtual-key currently physically pressed?
+fn key_is_down(vk: i32) -> bool {
+    unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+}
 
 // ── Global recording state ────────────────────────────────────────────────────
 
@@ -187,6 +210,13 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
         const NO_SPEECH_TIMEOUT_S: u64 = 6;      // give up if user never speaks
         const MAX_RECORD_S: u64 = 30;            // hard cap
 
+        // Walkie-talkie detection: if the hotkey is still held shortly after
+        // start, we're in HOLD mode -> stop the instant it's released. If it was
+        // a quick tap, fall back to auto-stop-on-silence (tap-to-talk).
+        let main_vk = mic_main_vk();
+        let mut mode_decided = false;
+        let mut walkie = false;
+
         loop {
             std::thread::sleep(std::time::Duration::from_millis(60));
 
@@ -211,16 +241,30 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
                 last_voice = now; // borderline — still talking
             }
 
+            // Walkie-talkie: decide mode after a short grace, then watch for release.
+            let mut key_released_stop = false;
+            if let Some(vk) = main_vk {
+                let down = key_is_down(vk);
+                if !mode_decided && start.elapsed().as_millis() >= 350 {
+                    walkie = down; // still holding after 350ms = walkie-talkie
+                    mode_decided = true;
+                }
+                if walkie && mode_decided && !down {
+                    key_released_stop = true; // released the hotkey -> send
+                }
+            }
+
             let manual_stop = STOP_FLAG.lock().map(|f| *f).unwrap_or(true);
-            let trailing_silence = speech_started
+            // Silence auto-stop only in TAP mode (not while holding in walkie mode).
+            let trailing_silence = !walkie && speech_started
                 && now.duration_since(last_voice).as_millis() >= TRAILING_SILENCE_MS;
             let no_speech = !speech_started && start.elapsed().as_secs() >= NO_SPEECH_TIMEOUT_S;
             let too_long = start.elapsed().as_secs() >= MAX_RECORD_S;
 
-            if manual_stop || trailing_silence || no_speech || too_long {
+            if manual_stop || key_released_stop || trailing_silence || no_speech || too_long {
                 tracing::info!(
-                    "Recording stop: manual={} trailing_silence={} no_speech={} too_long={}",
-                    manual_stop, trailing_silence, no_speech, too_long
+                    "Recording stop: manual={} key_released={} silence={} no_speech={} too_long={} walkie={}",
+                    manual_stop, key_released_stop, trailing_silence, no_speech, too_long, walkie
                 );
                 break;
             }

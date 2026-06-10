@@ -474,6 +474,73 @@ fn launch_shortcut(lnk: &std::path::Path) -> anyhow::Result<u32> {
     Ok(child.id())
 }
 
+/// Full Start-menu app index: (DisplayName, AppID) for EVERY installed app —
+/// both UWP/Store and classic desktop. This is exactly what the Windows shell
+/// uses, so it's the most reliable source of "what is installed". Cached for the
+/// session. Launch any entry via `explorer shell:AppsFolder\<AppID>`.
+fn get_start_apps() -> Vec<(String, String)> {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<Option<Vec<(String, String)>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(g) = cache.lock() {
+        if let Some(ref v) = *g { return v.clone(); }
+    }
+
+    let mut apps: Vec<(String, String)> = Vec::new();
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile", "-NonInteractive", "-Command",
+            "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress",
+        ])
+        .output();
+
+    if let Ok(o) = out {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            let arr = if val.is_array() { val.as_array().cloned().unwrap_or_default() } else { vec![val] };
+            for item in arr {
+                if let (Some(name), Some(appid)) = (item["Name"].as_str(), item["AppID"].as_str()) {
+                    if !name.trim().is_empty() && !appid.trim().is_empty() {
+                        apps.push((name.trim().to_string(), appid.trim().to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(mut g) = cache.lock() { *g = Some(apps.clone()); }
+    apps
+}
+
+/// Fuzzy-match an app name against the Start-menu index and return its AppID.
+fn find_start_app_id(query_lower: &str) -> Option<String> {
+    let apps = get_start_apps();
+    let mut best: Option<(u8, String)> = None;
+    for (name, appid) in &apps {
+        let n = name.to_lowercase();
+        let score = if n == query_lower { 0 }
+            else if n.starts_with(query_lower) { 1 }
+            else if n.split_whitespace().any(|w| w == query_lower) { 2 }
+            else if n.contains(query_lower) || query_lower.contains(n.as_str()) { 3 }
+            else { continue };
+        if best.as_ref().map_or(true, |(s, _)| score < *s) {
+            best = Some((score, appid.clone()));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Launch any Start-menu app by its AppID (works for UWP and Win32).
+fn launch_appsfolder(appid: &str) -> anyhow::Result<u32> {
+    let target = format!("shell:AppsFolder\\{}", appid);
+    let child = std::process::Command::new("explorer.exe")
+        .arg(&target)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to launch app id '{}': {}", appid, e))?;
+    Ok(child.id())
+}
+
 /// Searches and launches an application by name using a 4-tier strategy:
 ///
 /// Tier 1 — Known AUMID table (instant, covers WhatsApp, Spotify, Telegram, etc.)
@@ -484,6 +551,15 @@ fn launch_shortcut(lnk: &std::path::Path) -> anyhow::Result<u32> {
 /// Tier 6 — Direct spawn (treat 'name' as executable name/path directly)
 pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
     let name_lower = name.to_lowercase().trim().to_string();
+
+    // ── Tier 0: Get-StartApps index (MOST reliable — covers every installed
+    // UWP + desktop app exactly as the Windows shell sees them) ──────────────
+    if let Some(appid) = find_start_app_id(&name_lower) {
+        tracing::debug!("launch_app: Get-StartApps match for '{}' -> {}", name, appid);
+        if let Ok(pid) = launch_appsfolder(&appid) {
+            return Ok(pid);
+        }
+    }
 
     // ── Tier 1: Static AUMID table ──────────────────────────────────────────
     if let Some(aumid) = known_aumid(&name_lower) {
@@ -693,10 +769,9 @@ pub fn get_system_context() -> String {
     format!("{}{}{}", open_section, focused_section, installed_section)
 }
 
-/// Returns a de-duplicated, lowercased-friendly list of installed application
-/// names by scanning Start Menu shortcuts (.lnk) for both all-users and the
-/// current user. This is FAST (filesystem only, no PowerShell) and covers BOTH
-/// Microsoft Store apps and traditional desktop apps. Cached for the session.
+/// Returns a de-duplicated list of installed application names. Uses the
+/// authoritative Get-StartApps index (UWP + desktop) when available, falling
+/// back to scanning Start Menu shortcuts. Cached for the session.
 pub fn list_installed_app_names() -> Vec<String> {
     use std::collections::BTreeSet;
     use std::sync::{Mutex, OnceLock};
@@ -712,7 +787,19 @@ pub fn list_installed_app_names() -> Vec<String> {
 
     let mut names: BTreeSet<String> = BTreeSet::new();
 
-    // Start Menu shortcut roots
+    // Primary source: Get-StartApps (authoritative, includes UWP + desktop).
+    for (name, _) in get_start_apps() {
+        let nl = name.to_lowercase();
+        if !name.is_empty()
+            && !nl.contains("uninstall")
+            && !nl.contains("read me")
+            && name.len() < 45
+        {
+            names.insert(name);
+        }
+    }
+
+    // Fallback / supplement: Start Menu .lnk shortcuts.
     let mut roots: Vec<PathBuf> = Vec::new();
     roots.push(PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"));
     if let Some(appdata) = dirs::data_dir() {
@@ -730,7 +817,6 @@ pub fn list_installed_app_names() -> Vec<String> {
                 if let Some(stem) = path.file_stem() {
                     let name = stem.to_string_lossy().trim().to_string();
                     let nl = name.to_lowercase();
-                    // Skip uninstallers, docs, and noise
                     if !name.is_empty()
                         && !nl.contains("uninstall")
                         && !nl.contains("readme")
@@ -738,7 +824,7 @@ pub fn list_installed_app_names() -> Vec<String> {
                         && !nl.contains("documentation")
                         && !nl.contains("release notes")
                         && !nl.contains("website")
-                        && name.len() < 40
+                        && name.len() < 45
                     {
                         names.insert(name);
                     }
@@ -753,8 +839,7 @@ pub fn list_installed_app_names() -> Vec<String> {
         }
     }
 
-    // Cap to keep the prompt lean
-    let result: Vec<String> = names.into_iter().take(60).collect();
+    let result: Vec<String> = names.into_iter().take(80).collect();
 
     if let Ok(mut guard) = cache.lock() {
         *guard = Some(result.clone());
