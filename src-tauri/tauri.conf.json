@@ -23,15 +23,18 @@
       {
         "label": "overlay",
         "title": "Omni Overlay",
-        "width": 320,
-        "height": 180,
+        "width": 340,
+        "height": 500,
+        "minWidth": 340,
+        "minHeight": 60,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "shadow": false
       },
       {
         "label": "textinput",

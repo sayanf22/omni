@@ -148,13 +148,16 @@ pub fn run() {
             }
 
             // Position the overlay window at the top-right corner of the primary monitor
-            // (20px from right edge, 20px from top).
+            // 20px margin from right and top edges.
             if let Some(overlay) = app.get_webview_window("overlay") {
                 if let Ok(monitor) = overlay.primary_monitor() {
                     if let Some(monitor) = monitor {
                         let screen_w = monitor.size().width as i32;
-                        let overlay_w = 340_i32; // slightly wider than the window for margin
-                        let x = screen_w - overlay_w;
+                        // Account for scaling factor — set_position uses logical pixels
+                        let scale = monitor.scale_factor();
+                        let logical_screen_w = (screen_w as f64 / scale) as i32;
+                        let overlay_w = 360_i32; // window width (340) + 20px right margin
+                        let x = logical_screen_w - overlay_w;
                         let y = 20_i32;
                         let _ = overlay.set_position(tauri::LogicalPosition::new(x, y));
                     }

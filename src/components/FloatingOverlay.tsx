@@ -1,19 +1,37 @@
 /**
- * FloatingOverlay — top-right status card + approval dialog
+ * FloatingOverlay — top-right liquid-glass agent status card
  *
- * Shows what the agent is doing in a compact card pinned to the top-right.
- * On approval requests: expands to show full action description + Deny/Approve.
- * Auto-hides when idle. The textinput window is hidden once a task starts.
+ * • Liquid glass / frosted design: backdrop-filter blur + layered gradients
+ * • Shows live step-by-step history of what the agent is doing
+ * • Expandable log — up to 5 recent steps shown
+ * • Approval dialog with deny/approve
+ * • Smooth framer-motion transitions
+ * • Dynamically resizes the Tauri window to fit content
  */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, Loader2, CheckCircle2, AlertCircle, X, ShieldAlert, Square } from "lucide-react";
+import {
+  Mic, Loader2, CheckCircle2, AlertCircle, X,
+  ShieldAlert, Square, ChevronDown, ChevronUp,
+  Zap, Brain, MousePointer2, Keyboard, Eye, FileText, Clipboard
+} from "lucide-react";
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 type OverlayState = "idle" | "listening" | "thinking" | "working" | "approval" | "success" | "error";
+
+interface StepEntry {
+  step_num: number;
+  thought: string;
+  tool: string | null;
+  description: string;
+  success: boolean;
+  ts: number;
+}
 
 interface PermissionRequest {
   id: string;
@@ -23,277 +41,546 @@ interface PermissionRequest {
   preview: string | null;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const win = () => getCurrentWindow();
+
 const hideWindow = async () => {
-  try { await getCurrentWindow().hide(); } catch (_) {}
+  try { await win().hide(); } catch (_) {}
 };
 
-// Hide the text input floating window once a task has been dispatched
 const hideTextInput = async () => {
+  try { await new WebviewWindow("textinput").hide(); } catch (_) {}
+};
+
+const setWindowHeight = async (h: number) => {
   try {
-    const w = new WebviewWindow("textinput");
-    await w.hide();
+    const inner = await win().innerSize();
+    await win().setSize({ type: "Logical", width: inner.width, height: Math.round(h) } as any);
   } catch (_) {}
 };
 
+// Tool name → icon mapping
+const toolIcon = (tool: string | null) => {
+  if (!tool) return <Zap size={10} />;
+  const t = tool.toLowerCase();
+  if (t === "mouse")     return <MousePointer2 size={10} />;
+  if (t === "keyboard")  return <Keyboard size={10} />;
+  if (t === "screen")    return <Eye size={10} />;
+  if (t === "app")       return <Brain size={10} />;
+  if (t === "file")      return <FileText size={10} />;
+  if (t === "clipboard") return <Clipboard size={10} />;
+  return <Zap size={10} />;
+};
+
+// ── Liquid glass style helpers ────────────────────────────────────────────────
+
+const glassCard: React.CSSProperties = {
+  background: "linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%)",
+  backdropFilter: "blur(28px) saturate(180%)",
+  WebkitBackdropFilter: "blur(28px) saturate(180%)",
+  border: "1px solid rgba(255,255,255,0.10)",
+  borderRadius: 20,
+  boxShadow: [
+    "0 0 0 0.5px rgba(255,255,255,0.06)",
+    "0 8px 32px rgba(0,0,0,0.55)",
+    "0 2px 8px rgba(0,0,0,0.35)",
+    "inset 0 1px 0 rgba(255,255,255,0.10)",
+  ].join(", "),
+  overflow: "hidden",
+  userSelect: "none",
+};
+
+const glassInner: React.CSSProperties = {
+  background: "rgba(10,10,14,0.72)",
+};
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export const FloatingOverlay: React.FC = () => {
   const [state, setState] = useState<OverlayState>("idle");
-  const [text, setText] = useState("");
-  const [stepNum, setStepNum] = useState(0);
-  const [permissionReq, setPermissionReq] = useState<PermissionRequest | null>(null);
+  const [headerText, setHeaderText] = useState("");
+  const [steps, setSteps] = useState<StepEntry[]>([]);
+  const [expanded, setExpanded] = useState(false);
+  const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync window height to card content height
+  const syncHeight = useCallback(() => {
+    requestAnimationFrame(() => {
+      const h = cardRef.current?.getBoundingClientRect().height ?? 0;
+      if (h > 0) setWindowHeight(h + 12); // 12px padding for transparency edge
+    });
+  }, []);
+
+  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, syncHeight]);
+
+  // Clear any pending auto-hide
+  const clearAutoHide = () => {
+    if (autoHideTimer.current) {
+      clearTimeout(autoHideTimer.current);
+      autoHideTimer.current = null;
+    }
+  };
+
+  const scheduleHide = (ms: number) => {
+    clearAutoHide();
+    autoHideTimer.current = setTimeout(async () => {
+      setState("idle");
+      setSteps([]);
+      await hideWindow();
+    }, ms);
+  };
+
+  const show = async () => {
+    clearAutoHide();
+    await win().show();
+  };
 
   useEffect(() => {
     const cleanups: Array<() => void> = [];
 
     (async () => {
-      // ── Mic start ──────────────────────────────────────────────────────────
+      // Mic start
       cleanups.push(await listen("hotkey:mic_start", async () => {
-        await getCurrentWindow().show();
-        await getCurrentWindow().setFocus();
+        await show();
         setState("listening");
-        setText("Listening…");
+        setHeaderText("Listening…");
+        setSteps([]);
       }));
 
-      // ── Mic stop (processing) ─────────────────────────────────────────────
+      // Mic stop
       cleanups.push(await listen("hotkey:mic_stop", () => {
         setState("thinking");
-        setText("Processing…");
+        setHeaderText("Processing speech…");
       }));
 
-      // ── Voice transcript received — hide textinput, show overlay ──────────
-      cleanups.push(await listen<{ text: string }>("voice:transcript", async (event) => {
+      // Voice transcript
+      cleanups.push(await listen<{ text: string }>("voice:transcript", async (e) => {
         await hideTextInput();
-        await getCurrentWindow().show();
+        await show();
         setState("thinking");
-        setText(`"${event.payload.text}"`);
-        try {
-          invoke("run_task", { instruction: event.payload.text, userId: "" });
-        } catch (e: any) {
-          setState("error");
-          setText(e?.toString() || "Failed to start task.");
-        }
+        setHeaderText(`"${e.payload.text}"`);
+        setSteps([]);
+        try { invoke("run_task", { instruction: e.payload.text, userId: "" }); }
+        catch (err: any) { setState("error"); setHeaderText(err?.toString() || "Failed"); }
       }));
 
-      // ── Task started ──────────────────────────────────────────────────────
-      cleanups.push(await listen("task:started", async () => {
+      // Task started
+      cleanups.push(await listen<any>("task:started", async (e) => {
         await hideTextInput();
-        await getCurrentWindow().show();
+        await show();
         setState("thinking");
-        setStepNum(0);
+        const instr = e.payload?.instruction || "";
+        setHeaderText(instr ? `"${instr}"` : "Running task…");
+        setSteps([]);
+        setExpanded(false);
       }));
 
-      // ── Step update ───────────────────────────────────────────────────────
-      cleanups.push(await listen<any>("task:step", async (event) => {
-        await getCurrentWindow().show();
+      // Step update — append to history
+      cleanups.push(await listen<any>("task:step", async (e) => {
+        await show();
         setState("working");
-        setStepNum(event.payload.step_num || 0);
-        setText(event.payload.thought || event.payload.description || "Working…");
+        const entry: StepEntry = {
+          step_num: e.payload.step_num || 0,
+          thought: e.payload.thought || "",
+          tool: e.payload.tool || null,
+          description: e.payload.description || "",
+          success: e.payload.success !== false,
+          ts: Date.now(),
+        };
+        setSteps((prev) => {
+          // Keep last 20 steps max to avoid memory growth
+          const next = [...prev, entry].slice(-20);
+          return next;
+        });
+        setHeaderText(entry.thought || entry.description || "Working…");
       }));
 
-      // ── Permission request ────────────────────────────────────────────────
-      cleanups.push(await listen<PermissionRequest>("permission:request", async (event) => {
-        await getCurrentWindow().show();
-        await getCurrentWindow().setFocus();
+      // Permission request
+      cleanups.push(await listen<PermissionRequest>("permission:request", async (e) => {
+        await show();
+        await win().setFocus();
         setState("approval");
-        setPermissionReq(event.payload);
+        setPermReq(e.payload);
       }));
 
-      // ── Done ──────────────────────────────────────────────────────────────
-      cleanups.push(await listen("task:done", async () => {
+      // Done
+      cleanups.push(await listen<any>("task:done", async (e) => {
         setState("success");
-        setText("Done!");
-        setTimeout(async () => {
-          setState("idle");
-          await hideWindow();
-        }, 2500);
+        setHeaderText(e.payload?.result || "Task completed.");
+        scheduleHide(4000);
       }));
 
-      // ── Failed ────────────────────────────────────────────────────────────
-      cleanups.push(await listen<any>("task:failed", async (event) => {
+      // Failed
+      cleanups.push(await listen<any>("task:failed", async (e) => {
         setState("error");
-        setText(event.payload?.error || "Task failed.");
-        setTimeout(async () => {
-          setState("idle");
-          await hideWindow();
-        }, 4000);
+        setHeaderText(e.payload?.error || "Task failed.");
+        scheduleHide(5000);
       }));
 
-      // ── Killed ────────────────────────────────────────────────────────────
+      // Killed / cancelled
       cleanups.push(await listen("agent:killed", async () => {
         setState("idle");
+        setSteps([]);
         await hideWindow();
       }));
     })();
 
-    return () => cleanups.forEach((fn) => fn());
+    return () => {
+      cleanups.forEach((fn) => fn());
+      clearAutoHide();
+    };
   }, []);
 
   const handleApprove = async (approved: boolean) => {
-    if (!permissionReq) return;
+    if (!permReq) return;
     try {
-      await invoke("approve_request", { id: permissionReq.id, approved });
-      setPermissionReq(null);
+      await invoke("approve_request", { id: permReq.id, approved });
+      setPermReq(null);
       setState("working");
-      setText("Resuming…");
+      setHeaderText("Resuming…");
     } catch (e) { console.error(e); }
   };
 
   const handleCancel = async () => {
     try { await invoke("cancel_task"); } catch (_) {}
     setState("idle");
+    setSteps([]);
     await hideWindow();
   };
 
   if (state === "idle") return null;
 
-  // ── Determine height based on state ────────────────────────────────────────
-  // The overlay window is 320px wide, positioned top-right.
-  // We render a card that fills it, expanding/collapsing via AnimatePresence.
+  // Visible steps: show last 4 when collapsed, all when expanded
+  const visibleSteps = expanded ? steps : steps.slice(-4);
+
+  // ── State indicator config ──────────────────────────────────────────────────
+  const stateConfig = {
+    listening: { color: "#a78bfa", bg: "rgba(167,139,250,0.15)", border: "rgba(167,139,250,0.3)", label: "Listening", icon: <Mic size={13} /> },
+    thinking:  { color: "#818CF8", bg: "rgba(129,140,248,0.15)", border: "rgba(129,140,248,0.3)", label: "Thinking",  icon: <Loader2 size={13} className="animate-spin" /> },
+    working:   { color: "#38bdf8", bg: "rgba(56,189,248,0.15)",  border: "rgba(56,189,248,0.3)",  label: "Working",   icon: <Loader2 size={13} className="animate-spin" /> },
+    approval:  { color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.35)", label: "Approval", icon: <ShieldAlert size={13} /> },
+    success:   { color: "#34d399", bg: "rgba(52,211,153,0.15)",  border: "rgba(52,211,153,0.3)",  label: "Done",      icon: <CheckCircle2 size={13} /> },
+    error:     { color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.3)", label: "Error",     icon: <AlertCircle size={13} /> },
+  } as const;
+
+  const cfg = stateConfig[state as keyof typeof stateConfig] ?? stateConfig.thinking;
 
   return (
-    <AnimatePresence>
+    <div ref={cardRef} style={{ padding: "6px 6px 6px 6px", boxSizing: "border-box" }}>
       <motion.div
-        key={state}
-        initial={{ opacity: 0, y: -8, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -8, scale: 0.97 }}
-        transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-        style={{
-          width: "100%",
-          background: "#111113",
-          border: state === "approval" ? "1px solid rgba(239,68,68,0.45)" : "1px solid #232327",
-          borderRadius: "14px",
-          overflow: "hidden",
-          boxShadow: "0 16px 40px rgba(0,0,0,0.6), 0 4px 12px rgba(0,0,0,0.4)",
-          userSelect: "none",
-        }}
+        initial={{ opacity: 0, scale: 0.94, y: -6 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.22, ease: [0.34, 1.2, 0.64, 1] }}
+        style={{ ...glassCard, width: "100%" }}
       >
-        {/* ── Listening ──────────────────────────────────────────────────────── */}
-        {state === "listening" && (
-          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ position: "relative", width: 32, height: 32, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "rgba(255,255,255,0.04)", animation: "ompulse 1.5s ease-out infinite" }} />
-              <Mic style={{ width: 14, height: 14, color: "#f4f4f5" }} />
+        <div style={glassInner}>
+
+          {/* ── Header bar ─────────────────────────────────────────────────── */}
+          <div style={{
+            padding: "10px 12px 8px",
+            display: "flex", alignItems: "center", gap: 9,
+            borderBottom: steps.length > 0 ? "1px solid rgba(255,255,255,0.06)" : undefined,
+          }}>
+            {/* Status pill */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "3px 8px 3px 6px",
+              background: cfg.bg,
+              border: `1px solid ${cfg.border}`,
+              borderRadius: 99,
+              flexShrink: 0,
+            }}>
+              <span style={{ color: cfg.color, display: "flex", alignItems: "center" }}>
+                {cfg.icon}
+              </span>
+              <span style={{ color: cfg.color, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>
+                {cfg.label}
+              </span>
             </div>
-            <div>
-              <p style={{ color: "#f4f4f5", fontSize: 12, fontWeight: 700 }}>Listening…</p>
-              <p style={{ color: "#52525B", fontSize: 10 }}>Release key when done speaking</p>
+
+            {/* Header text */}
+            <p style={{
+              flex: 1, minWidth: 0,
+              color: "rgba(255,255,255,0.75)",
+              fontSize: 11, fontWeight: 500,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              lineHeight: 1.3,
+            }}>
+              {headerText}
+            </p>
+
+            {/* Controls */}
+            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {(state === "working" || state === "thinking") && (
+                <button
+                  onClick={handleCancel}
+                  title="Stop task"
+                  style={{
+                    display: "flex", alignItems: "center", gap: 3,
+                    padding: "3px 7px",
+                    background: "rgba(248,113,113,0.15)",
+                    border: "1px solid rgba(248,113,113,0.3)",
+                    borderRadius: 8,
+                    color: "#f87171",
+                    fontSize: 10, fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Square size={8} fill="#f87171" /> Stop
+                </button>
+              )}
+              {(state === "success" || state === "error") && (
+                <button
+                  onClick={async () => { setState("idle"); setSteps([]); await hideWindow(); }}
+                  title="Dismiss"
+                  style={{
+                    padding: "3px 6px",
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: 7, color: "rgba(255,255,255,0.4)",
+                    cursor: "pointer", display: "flex", alignItems: "center",
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              )}
             </div>
           </div>
-        )}
 
-        {/* ── Thinking ───────────────────────────────────────────────────────── */}
-        {state === "thinking" && (
-          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <Loader2 style={{ width: 13, height: 13, color: "#818CF8", animation: "omspin 0.8s linear infinite" }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ color: "#818CF8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>Planning</p>
-              <p style={{ color: "#a1a1aa", fontSize: 11, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text || "Analyzing task…"}</p>
-            </div>
-            <button onClick={handleCancel} style={{ padding: 4, background: "transparent", border: "none", color: "#52525B", cursor: "pointer", borderRadius: 6 }} title="Cancel">
-              <X style={{ width: 12, height: 12 }} />
-            </button>
-          </div>
-        )}
-
-        {/* ── Working ────────────────────────────────────────────────────────── */}
-        {state === "working" && (
-          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <Loader2 style={{ width: 13, height: 13, color: "#818CF8", animation: "omspin 0.8s linear infinite" }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-                <span style={{ color: "#f4f4f5", fontSize: 11, fontWeight: 700 }}>Step {stepNum}</span>
-                <span style={{ color: "#3f3f46", fontSize: 10 }}>executing</span>
-              </div>
-              <p style={{ color: "#a1a1aa", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text}</p>
-            </div>
-            <button onClick={handleCancel} style={{ flexShrink: 0, padding: "5px 8px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, color: "#ef4444", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-              <Square style={{ width: 9, height: 9, fill: "#ef4444" }} /> Stop
-            </button>
-          </div>
-        )}
-
-        {/* ── Approval ───────────────────────────────────────────────────────── */}
-        {state === "approval" && permissionReq && (
-          <div style={{ padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
-              <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.35)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-                <ShieldAlert style={{ width: 13, height: 13, color: "#ef4444" }} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Permission Required</p>
-                <p style={{ color: "#f4f4f5", fontSize: 12, fontWeight: 600, lineHeight: 1.4, wordBreak: "break-word" }}>
-                  {permissionReq.description}
-                </p>
-                {permissionReq.tool && (
-                  <span style={{ display: "inline-block", marginTop: 6, padding: "2px 7px", background: "#1e1e22", border: "1px solid #2e2e34", borderRadius: 6, color: "#71717A", fontSize: 10, fontFamily: "monospace" }}>
-                    {permissionReq.tool} → {permissionReq.action}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => handleApprove(false)}
-                style={{ flex: 1, padding: "7px 0", background: "#1e1e22", border: "1px solid #2e2e34", borderRadius: 9, color: "#f4f4f5", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+          {/* ── Step history ────────────────────────────────────────────────── */}
+          <AnimatePresence initial={false}>
+            {steps.length > 0 && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
               >
-                Deny
-              </button>
-              <button
-                onClick={() => handleApprove(true)}
-                style={{ flex: 1, padding: "7px 0", background: "#16a34a", border: "1px solid rgba(22,163,74,0.6)", borderRadius: 9, color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                <div style={{ padding: "6px 10px 4px" }}>
+                  {/* Toggle expand/collapse */}
+                  {steps.length > 4 && (
+                    <button
+                      onClick={() => setExpanded((e) => !e)}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+                        gap: 4, padding: "3px 0 5px",
+                        background: "transparent", border: "none",
+                        color: "rgba(255,255,255,0.3)", fontSize: 9, fontWeight: 600,
+                        cursor: "pointer", letterSpacing: "0.05em", textTransform: "uppercase",
+                      }}
+                    >
+                      {expanded ? <><ChevronUp size={9} /> Show less</> : <><ChevronDown size={9} /> Show all {steps.length} steps</>}
+                    </button>
+                  )}
+
+                  {/* Step rows */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {visibleSteps.map((s, i) => (
+                      <motion.div
+                        key={s.ts}
+                        initial={{ opacity: 0, x: 6 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.14, delay: i * 0.02 }}
+                        style={{
+                          display: "flex", alignItems: "flex-start", gap: 7,
+                          padding: "5px 7px",
+                          background: s.success
+                            ? "rgba(255,255,255,0.03)"
+                            : "rgba(248,113,113,0.07)",
+                          border: s.success
+                            ? "1px solid rgba(255,255,255,0.06)"
+                            : "1px solid rgba(248,113,113,0.2)",
+                          borderRadius: 10,
+                        }}
+                      >
+                        {/* Step number */}
+                        <span style={{
+                          flexShrink: 0, width: 16, height: 16,
+                          borderRadius: "50%",
+                          background: s.success ? "rgba(56,189,248,0.15)" : "rgba(248,113,113,0.15)",
+                          border: s.success ? "1px solid rgba(56,189,248,0.3)" : "1px solid rgba(248,113,113,0.3)",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 8, fontWeight: 800,
+                          color: s.success ? "#38bdf8" : "#f87171",
+                        }}>
+                          {s.step_num}
+                        </span>
+
+                        {/* Content */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          {s.thought && (
+                            <p style={{
+                              color: "rgba(255,255,255,0.65)", fontSize: 10, fontWeight: 500,
+                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                              marginBottom: 1,
+                            }}>
+                              {s.thought}
+                            </p>
+                          )}
+                          {s.description && s.description !== s.thought && (
+                            <p style={{
+                              color: s.success ? "rgba(255,255,255,0.35)" : "#f87171",
+                              fontSize: 9, lineHeight: 1.4,
+                              overflow: "hidden", textOverflow: "ellipsis",
+                              display: "-webkit-box",
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: "vertical",
+                            }}>
+                              {s.description}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Tool badge */}
+                        {s.tool && (
+                          <span style={{
+                            flexShrink: 0,
+                            display: "flex", alignItems: "center", gap: 3,
+                            padding: "2px 5px",
+                            background: "rgba(255,255,255,0.05)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 5,
+                            color: "rgba(255,255,255,0.4)",
+                            fontSize: 8, fontWeight: 600, textTransform: "uppercase",
+                          }}>
+                            {toolIcon(s.tool)}
+                            {s.tool}
+                          </span>
+                        )}
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ── Approval dialog ─────────────────────────────────────────────── */}
+          <AnimatePresence>
+            {state === "approval" && permReq && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
               >
-                Approve
-              </button>
-            </div>
-          </div>
-        )}
+                <div style={{
+                  padding: "10px 12px 12px",
+                  borderTop: "1px solid rgba(248,113,113,0.2)",
+                }}>
+                  <p style={{
+                    color: "#f87171", fontSize: 9, fontWeight: 700,
+                    textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6,
+                  }}>
+                    Permission Required
+                  </p>
+                  <p style={{
+                    color: "rgba(255,255,255,0.8)", fontSize: 11, lineHeight: 1.5,
+                    wordBreak: "break-word", marginBottom: 8,
+                  }}>
+                    {permReq.description}
+                  </p>
+                  {permReq.tool && (
+                    <span style={{
+                      display: "inline-block", marginBottom: 10,
+                      padding: "2px 8px",
+                      background: "rgba(255,255,255,0.05)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: 6, color: "rgba(255,255,255,0.4)",
+                      fontSize: 9, fontFamily: "monospace",
+                    }}>
+                      {permReq.tool} → {permReq.action}
+                    </span>
+                  )}
+                  <div style={{ display: "flex", gap: 7 }}>
+                    <button
+                      onClick={() => handleApprove(false)}
+                      style={{
+                        flex: 1, padding: "7px 0",
+                        background: "rgba(255,255,255,0.06)",
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        borderRadius: 11, color: "rgba(255,255,255,0.6)",
+                        fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >
+                      Deny
+                    </button>
+                    <button
+                      onClick={() => handleApprove(true)}
+                      style={{
+                        flex: 1, padding: "7px 0",
+                        background: "linear-gradient(135deg, rgba(52,211,153,0.3), rgba(16,185,129,0.2))",
+                        border: "1px solid rgba(52,211,153,0.4)",
+                        borderRadius: 11, color: "#34d399",
+                        fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >
+                      Approve ✓
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-        {/* ── Success ────────────────────────────────────────────────────────── */}
-        {state === "success" && (
-          <div style={{ padding: "12px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <CheckCircle2 style={{ width: 13, height: 13, color: "#10b981" }} />
-            </div>
-            <div>
-              <p style={{ color: "#10b981", fontSize: 12, fontWeight: 700 }}>Task completed</p>
-              <p style={{ color: "#52525B", fontSize: 10, marginTop: 1 }}>Auto-closing in 2s…</p>
-            </div>
-          </div>
-        )}
+          {/* ── Success result ─────────────────────────────────────────────── */}
+          <AnimatePresence>
+            {state === "success" && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <div style={{
+                  padding: "8px 12px 10px",
+                  borderTop: "1px solid rgba(52,211,153,0.15)",
+                }}>
+                  <p style={{
+                    color: "rgba(255,255,255,0.5)", fontSize: 10,
+                    lineHeight: 1.5, wordBreak: "break-word",
+                  }}>
+                    {headerText}
+                  </p>
+                  <p style={{ color: "rgba(255,255,255,0.2)", fontSize: 9, marginTop: 4 }}>
+                    Auto-closing in 4s…
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-        {/* ── Error ──────────────────────────────────────────────────────────── */}
-        {state === "error" && (
-          <div style={{ padding: "12px 14px", display: "flex", alignItems: "flex-start", gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-              <AlertCircle style={{ width: 13, height: 13, color: "#ef4444" }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ color: "#ef4444", fontSize: 12, fontWeight: 700, marginBottom: 2 }}>Error</p>
-              <p style={{ color: "#a1a1aa", fontSize: 11, wordBreak: "break-word", lineHeight: 1.4 }}>{text}</p>
-            </div>
-            <button onClick={async () => { setState("idle"); await hideWindow(); }} style={{ padding: 4, background: "transparent", border: "none", color: "#52525B", cursor: "pointer", borderRadius: 6, flexShrink: 0 }}>
-              <X style={{ width: 12, height: 12 }} />
-            </button>
-          </div>
-        )}
+          {/* ── Bottom glow accent ─────────────────────────────────────────── */}
+          <div style={{
+            height: 2,
+            background: `linear-gradient(90deg, transparent, ${cfg.color}55, transparent)`,
+            opacity: 0.6,
+          }} />
+        </div>
       </motion.div>
-    </AnimatePresence>
+    </div>
   );
 };
 
 export default FloatingOverlay;
 
-// Styles injected for overlay-specific animations
-const style = document.createElement("style");
-style.textContent = `
-  @keyframes omspin  { to { transform: rotate(360deg); } }
-  @keyframes ompulse { 0%,100%{opacity:0.4;transform:scale(1)} 50%{opacity:0;transform:scale(1.8)} }
-`;
-if (typeof document !== "undefined" && !document.getElementById("omni-overlay-styles")) {
-  style.id = "omni-overlay-styles";
-  document.head.appendChild(style);
+// ── Injected keyframe CSS ─────────────────────────────────────────────────────
+if (typeof document !== "undefined") {
+  const id = "omni-overlay-styles";
+  if (!document.getElementById(id)) {
+    const s = document.createElement("style");
+    s.id = id;
+    s.textContent = `
+      @keyframes omspin  { to { transform: rotate(360deg); } }
+      @keyframes ompulse {
+        0%,100% { opacity:0.5; transform:scale(1);   }
+        50%     { opacity:0;   transform:scale(1.9); }
+      }
+      .animate-spin { animation: omspin 0.8s linear infinite; }
+    `;
+    document.head.appendChild(s);
+  }
 }
