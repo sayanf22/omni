@@ -100,6 +100,7 @@ const glassInner: React.CSSProperties = {
 export const FloatingOverlay: React.FC = () => {
   const [state, setState] = useState<OverlayState>("idle");
   const [headerText, setHeaderText] = useState("");
+  const [heard, setHeard] = useState("");   // what the user said / typed — stays visible
   const [steps, setSteps] = useState<StepEntry[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
@@ -116,7 +117,7 @@ export const FloatingOverlay: React.FC = () => {
     });
   }, []);
 
-  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, question, syncHeight]);
+  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, question, heard, syncHeight]);
 
   // Clear any pending auto-hide
   const clearAutoHide = () => {
@@ -131,6 +132,7 @@ export const FloatingOverlay: React.FC = () => {
     autoHideTimer.current = setTimeout(async () => {
       setState("idle");
       setSteps([]);
+      setHeard("");
       await hideWindow();
     }, ms);
   };
@@ -149,23 +151,26 @@ export const FloatingOverlay: React.FC = () => {
         await show();
         setState("listening");
         setHeaderText("Listening…");
+        setHeard("");
         setSteps([]);
       }));
 
       // Mic stop
       cleanups.push(await listen("hotkey:mic_stop", () => {
         setState("thinking");
-        setHeaderText("Processing speech…");
+        setHeaderText("Transcribing what you said…");
       }));
 
-      // Voice transcript
+      // Voice transcript — show EXACTLY what was heard, prominently and persistently
       cleanups.push(await listen<{ text: string }>("voice:transcript", async (e) => {
         await hideTextInput();
         await show();
+        const said = (e.payload.text || "").trim();
+        setHeard(said);
         setState("thinking");
-        setHeaderText(`"${e.payload.text}"`);
+        setHeaderText("Understood — starting…");
         setSteps([]);
-        try { invoke("run_task", { instruction: e.payload.text, userId: "" }); }
+        try { invoke("run_task", { instruction: said, userId: "" }); }
         catch (err: any) { setState("error"); setHeaderText(err?.toString() || "Failed"); }
       }));
 
@@ -174,8 +179,9 @@ export const FloatingOverlay: React.FC = () => {
         await hideTextInput();
         await show();
         setState("thinking");
-        const instr = e.payload?.instruction || "";
-        setHeaderText(instr ? `"${instr}"` : "Running task…");
+        const instr = (e.payload?.instruction || "").trim();
+        if (instr) setHeard(instr);   // also covers typed commands
+        setHeaderText("Planning…");
         setSteps([]);
         setExpanded(false);
       }));
@@ -235,6 +241,7 @@ export const FloatingOverlay: React.FC = () => {
       cleanups.push(await listen("agent:killed", async () => {
         setState("idle");
         setSteps([]);
+        setHeard("");
         await hideWindow();
       }));
     })();
@@ -374,6 +381,44 @@ export const FloatingOverlay: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* ── "You said" transcript bubble — shows what was heard/typed ─────── */}
+          <AnimatePresence initial={false}>
+            {heard && (state === "thinking" || state === "working" || state === "question" || state === "approval") && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
+              >
+                <div style={{ padding: "2px 12px 8px" }}>
+                  <div style={{
+                    display: "flex", alignItems: "flex-start", gap: 7,
+                    padding: "8px 10px",
+                    background: "linear-gradient(135deg, rgba(56,189,248,0.10), rgba(129,140,248,0.06))",
+                    border: "1px solid rgba(56,189,248,0.22)",
+                    borderRadius: 12,
+                  }}>
+                    <Mic size={12} style={{ color: "#38bdf8", flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{
+                        color: "rgba(255,255,255,0.45)", fontSize: 8.5, fontWeight: 700,
+                        textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2,
+                      }}>
+                        You said
+                      </p>
+                      <p style={{
+                        color: "rgba(255,255,255,0.92)", fontSize: 12, fontWeight: 500,
+                        lineHeight: 1.45, wordBreak: "break-word",
+                      }}>
+                        {heard}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* ── Step history ────────────────────────────────────────────────── */}
           <AnimatePresence initial={false}>
