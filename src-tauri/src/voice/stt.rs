@@ -727,3 +727,112 @@ if ($result -ne $null) {{ Write-Output $result.Text }}"#,
     tracing::info!("SAPI result: '{}'", text);
     Ok(text)
 }
+
+// ── One-click offline Whisper setup (download model + engine) ─────────────────
+
+/// Stream-download a URL to a file, emitting progress as `whisper:download`.
+async fn download_file(
+    url: &str,
+    dest: &PathBuf,
+    app: &tauri::AppHandle,
+    stage: &str,
+) -> anyhow::Result<()> {
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+    use futures_util::StreamExt;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(900))
+        .build()?;
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!("Download failed ({}): {}", resp.status(), url));
+    }
+    let total = resp.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = resp.bytes_stream();
+    let mut last_pct = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        if total > 0 {
+            let pct = downloaded * 100 / total;
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = app.emit("whisper:download", serde_json::json!({
+                    "stage": stage, "pct": pct
+                }));
+            }
+        }
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+/// Extract a zip archive into `dir`, flattening files to the top level.
+fn extract_zip_flat(zip_path: &PathBuf, dir: &PathBuf) -> anyhow::Result<()> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        if entry.is_dir() { continue; }
+        let name = match entry.enclosed_name() {
+            Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string()),
+            None => None,
+        };
+        let Some(name) = name else { continue };
+        // Only keep what we need: the exe and its DLLs.
+        let nl = name.to_lowercase();
+        if nl.ends_with(".exe") || nl.ends_with(".dll") {
+            let out_path = dir.join(&name);
+            let mut out = std::fs::File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Tauri command — download a working offline Whisper engine + English model
+/// into %APPDATA%\Omni\whisper\ so voice works locally with zero manual steps.
+/// Emits `whisper:download` progress events. Safe to call repeatedly (skips
+/// files that already exist).
+#[tauri::command]
+pub async fn download_whisper(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Emitter;
+    let dir = whisper_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // 1) Model (~148 MB) from HuggingFace (stable URL).
+    let model_path = dir.join("ggml-base.en.bin");
+    if !model_path.exists() {
+        let _ = app.emit("whisper:download", serde_json::json!({"stage":"model","pct":0}));
+        download_file(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+            &model_path, &app, "model",
+        ).await.map_err(|e| format!("Model download failed: {}", e))?;
+    }
+
+    // 2) Engine binary (whisper.cpp prebuilt Windows x64) from a pinned release.
+    if find_whisper_binary().is_none() {
+        let _ = app.emit("whisper:download", serde_json::json!({"stage":"engine","pct":0}));
+        let zip_path = dir.join("whisper-bin.zip");
+        download_file(
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.4/whisper-bin-x64.zip",
+            &zip_path, &app, "engine",
+        ).await.map_err(|e| format!("Engine download failed: {}", e))?;
+        extract_zip_flat(&zip_path, &dir).map_err(|e| format!("Engine extract failed: {}", e))?;
+        let _ = std::fs::remove_file(&zip_path);
+    }
+
+    let ok = find_whisper_binary().is_some() && find_whisper_model().is_some();
+    let _ = app.emit("whisper:download", serde_json::json!({
+        "stage": if ok { "done" } else { "error" }, "pct": 100
+    }));
+    if ok {
+        Ok("Offline voice (Whisper) is ready.".to_string())
+    } else {
+        Err("Whisper files missing after download. Check your connection and try again.".to_string())
+    }
+}

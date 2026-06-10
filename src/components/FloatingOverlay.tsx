@@ -96,31 +96,31 @@ const glassInner: React.CSSProperties = {
 };
 
 // ── Live audio waveform (WisperFlow-style) ────────────────────────────────────
-// Flat bars when silent, bars rise/ripple with the mic level when speaking.
+// Always gently animating while listening (so you can SEE it's live), and the
+// bars jump up with your voice level.
 const Waveform: React.FC<{ level: number }> = ({ level }) => {
-  const bars = 9;
-  // Per-bar height multipliers create an organic centered shape.
-  const shape = [0.35, 0.55, 0.75, 0.9, 1.0, 0.9, 0.75, 0.55, 0.35];
+  const bars = 11;
+  const shape = [0.4, 0.6, 0.8, 0.95, 1.0, 1.0, 1.0, 0.95, 0.8, 0.6, 0.4];
+  const lvl = Math.max(0, Math.min(1, level));
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 3, height: 22 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 3, height: 26 }}>
       {Array.from({ length: bars }).map((_, i) => {
-        const min = 3;
-        const max = 20;
-        // Idle: tiny flat bars. Active: scale by level * per-bar shape, with a
-        // little phase variation so it ripples instead of moving as one block.
-        const phase = 0.75 + 0.25 * Math.sin((i / bars) * Math.PI * 2 + level * 6);
-        const h = level < 0.04
-          ? min
-          : Math.max(min, Math.min(max, min + level * (max - min) * shape[i] * phase * 1.6));
+        const base = 4;            // idle minimum height
+        const max = 24;
+        const h = Math.max(base, Math.min(max, base + lvl * (max - base) * shape[i]));
         return (
           <span
             key={i}
+            className="omni-wavebar"
             style={{
               width: 3,
               height: h,
-              borderRadius: 2,
+              borderRadius: 3,
               background: "linear-gradient(180deg, #a78bfa, #38bdf8)",
-              transition: "height 90ms cubic-bezier(0.4,0,0.2,1)",
+              transition: "height 80ms cubic-bezier(0.4,0,0.2,1)",
+              animationDelay: `${i * 0.09}s`,
+              // When the user is speaking, reduce the idle shimmer (real motion dominates)
+              animationDuration: lvl > 0.1 ? "0.5s" : "1.1s",
             }}
           />
         );
@@ -776,7 +776,12 @@ if (typeof document !== "undefined") {
         0%,100% { opacity:0.5; transform:scale(1);   }
         50%     { opacity:0;   transform:scale(1.9); }
       }
+      @keyframes omwave {
+        0%,100% { transform: scaleY(0.5); }
+        50%     { transform: scaleY(1.0); }
+      }
       .animate-spin { animation: omspin 0.8s linear infinite; }
+      .omni-wavebar { animation: omwave 1.1s ease-in-out infinite; transform-origin: center; }
     `;
     document.head.appendChild(s);
   }

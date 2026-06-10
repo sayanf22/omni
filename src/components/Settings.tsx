@@ -734,6 +734,11 @@ export const Settings: React.FC = () => {
 
   // System keys
   const [elevenLabsKey, setElevenLabsKey] = useState("");
+  // Offline voice (Whisper) state
+  const [sttStatus, setSttStatus] = useState<{ engine: string; local_whisper_available: boolean; elevenlabs_configured: boolean } | null>(null);
+  const [whisperDownloading, setWhisperDownloading] = useState(false);
+  const [whisperProgress, setWhisperProgress] = useState<{ stage: string; pct: number } | null>(null);
+  const [whisperMsg, setWhisperMsg] = useState<string | null>(null);
   const [mem0Key, setMem0Key]   = useState("");
   const [mem0Type, setMem0Type] = useState<"cloud" | "self-hosted">("cloud");
   const [mem0Url, setMem0Url]   = useState("https://api.mem0.ai");
@@ -776,6 +781,39 @@ export const Settings: React.FC = () => {
       await invoke("save_api_key", { name: "elevenlabs", value: elevenLabsKey });
       alert("ElevenLabs key saved.");
     } catch (e: any) { alert("Failed: " + e); }
+  };
+
+  // ── Offline voice (Whisper) ────────────────────────────────────────────────
+  const refreshSttStatus = async () => {
+    try { setSttStatus(await invoke("get_stt_status")); } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    refreshSttStatus();
+    let un: (() => void) | null = null;
+    listen<{ stage: string; pct: number }>("whisper:download", (e) => {
+      setWhisperProgress(e.payload);
+      if (e.payload.stage === "done" || e.payload.stage === "error") {
+        setWhisperDownloading(false);
+        refreshSttStatus();
+      }
+    }).then((fn) => { un = fn; });
+    return () => { if (un) un(); };
+  }, []);
+
+  const handleDownloadWhisper = async () => {
+    setWhisperDownloading(true);
+    setWhisperMsg(null);
+    setWhisperProgress({ stage: "starting", pct: 0 });
+    try {
+      const msg = await invoke<string>("download_whisper");
+      setWhisperMsg(msg);
+      await refreshSttStatus();
+    } catch (e: any) {
+      setWhisperMsg(typeof e === "string" ? e : (e?.message || "Download failed."));
+    } finally {
+      setWhisperDownloading(false);
+    }
   };
 
   const handleSaveMem0 = async () => {
@@ -1020,6 +1058,60 @@ export const Settings: React.FC = () => {
             <h3 className="font-semibold text-text text-sm">System Integrations</h3>
             <p className="text-xs text-text-secondary">Voice (STT/TTS) and memory keys.</p>
           </div>
+        </div>
+
+        {/* ── Offline Voice (Whisper) — open-source, local, recommended ── */}
+        <div className="p-4 bg-surface2 border border-border rounded-xl space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-semibold text-text flex items-center gap-2">
+                Offline Voice — Whisper
+                {sttStatus?.engine === "local_whisper" && (
+                  <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-success/15 text-success border border-success/25">Active</span>
+                )}
+              </h4>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Open-source speech-to-text that runs 100% on your PC — fast, private, no API key.
+                Recommended. One-time download (~150&nbsp;MB).
+              </p>
+            </div>
+          </div>
+
+          {/* Current engine indicator */}
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-text-muted">Current STT engine:</span>
+            <span className="font-semibold text-text">
+              {sttStatus?.engine === "local_whisper" ? "Local Whisper (offline)"
+                : sttStatus?.engine === "elevenlabs" ? "ElevenLabs (cloud)"
+                : "Windows SAPI (basic fallback)"}
+            </span>
+          </div>
+
+          {whisperDownloading || whisperProgress ? (
+            <div className="space-y-1.5">
+              <div className="h-2 rounded-full bg-surface3 overflow-hidden">
+                <div className="h-full bg-accent transition-all duration-200"
+                     style={{ width: `${whisperProgress?.pct ?? 0}%` }} />
+              </div>
+              <p className="text-[10px] text-text-muted">
+                {whisperProgress?.stage === "model" ? "Downloading speech model…"
+                  : whisperProgress?.stage === "engine" ? "Downloading engine…"
+                  : whisperProgress?.stage === "done" ? "Done!"
+                  : whisperProgress?.stage === "error" ? "Failed — check connection."
+                  : "Starting…"} {whisperProgress?.pct ? `${whisperProgress.pct}%` : ""}
+              </p>
+            </div>
+          ) : sttStatus?.local_whisper_available ? (
+            <p className="text-xs text-success font-semibold">✓ Offline Whisper is installed and active.</p>
+          ) : (
+            <button
+              onClick={handleDownloadWhisper}
+              className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg transition-colors"
+            >
+              Download offline voice (~150 MB)
+            </button>
+          )}
+          {whisperMsg && <p className="text-[10px] text-text-muted">{whisperMsg}</p>}
         </div>
 
         {/* ElevenLabs */}
