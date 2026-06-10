@@ -22,7 +22,9 @@ static STOP_FLAG: Mutex<bool> = Mutex::new(false);
 
 /// Start capturing audio from the default input device.
 /// Uses CPAL directly — no PowerShell, no MCI, fully cross-process-safe.
-pub fn start_mic_recording() -> anyhow::Result<()> {
+/// Emits `voice:level` events (0.0–1.0 RMS amplitude) so the UI can animate a
+/// live waveform that reacts to your voice.
+pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
     use cpal::traits::{DeviceTrait, HostTrait};
 
     // Stop any existing recording first
@@ -71,8 +73,10 @@ pub fn start_mic_recording() -> anyhow::Result<()> {
     }
 
     // Spawn recording thread
+    let app_for_levels = app.clone();
     let handle = std::thread::spawn(move || {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use tauri::Emitter;
 
         let host = cpal::default_host();
         let device = match host.default_input_device() {
@@ -156,11 +160,31 @@ pub fn start_mic_recording() -> anyhow::Result<()> {
 
         tracing::info!("Audio stream recording started");
 
-        // Poll until stop flag is set (max 60 seconds to prevent runaway)
+        // Poll until stop flag is set (max 60 seconds to prevent runaway).
+        // Each tick: compute RMS of newly-captured samples and emit it for the
+        // live waveform animation.
         let start = std::time::Instant::now();
+        let mut last_len = 0usize;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            
+            std::thread::sleep(std::time::Duration::from_millis(60));
+
+            // Emit current audio level (RMS of new samples since last tick)
+            if let Ok(buf) = samples_clone.lock() {
+                let len = buf.len();
+                if len > last_len {
+                    let slice = &buf[last_len..len];
+                    let sum_sq: f32 = slice.iter().map(|s| s * s).sum();
+                    let rms = (sum_sq / slice.len() as f32).sqrt();
+                    // Scale to a lively 0..1 range (mic RMS is usually small)
+                    let level = (rms * 8.0).clamp(0.0, 1.0);
+                    let _ = app_for_levels.emit("voice:level", level);
+                    last_len = len;
+                } else {
+                    // No new audio = silence
+                    let _ = app_for_levels.emit("voice:level", 0.0_f32);
+                }
+            }
+
             let should_stop = STOP_FLAG.lock().map(|f| *f).unwrap_or(true);
             if should_stop || start.elapsed().as_secs() > 60 {
                 break;
@@ -233,10 +257,12 @@ pub async fn stop_mic_recording() -> anyhow::Result<String> {
     let temp_path = std::env::temp_dir().join("omni_input.wav");
     write_wav_file(&temp_path, &mono16k, 16_000, 1)?;
 
-    // ── Transcription priority ──────────────────────────────────────────────
+    // ── Transcription priority (each guarded by a timeout so it never hangs) ─
     //   1. Local Whisper (whisper.cpp) — fully offline, fast, private, accurate.
     //   2. ElevenLabs Scribe — cloud, most accurate, needs API key + internet.
     //   3. Windows SAPI — zero-setup offline fallback (lower accuracy).
+    use tokio::time::{timeout, Duration};
+
     let result = if let Some(text) = try_local_whisper(&temp_path).await {
         tracing::info!("Local Whisper STT: '{}'", text);
         text
@@ -245,19 +271,23 @@ pub async fn stop_mic_recording() -> anyhow::Result<String> {
             .or_else(|| get_key("elevenlabs_api_key").ok().flatten());
 
         if let Some(key) = key_opt.filter(|k| !k.is_empty() && !k.contains('•')) {
-            match call_elevenlabs_stt(&temp_path, &key).await {
-                Ok(text) => {
+            match timeout(Duration::from_secs(25), call_elevenlabs_stt(&temp_path, &key)).await {
+                Ok(Ok(text)) => {
                     tracing::info!("ElevenLabs STT: '{}'", text);
                     text
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("ElevenLabs STT failed ({}), falling back to SAPI", e);
-                    run_offline_sapi_stt(&temp_path).await?
+                    sapi_with_timeout(&temp_path).await?
+                }
+                Err(_) => {
+                    tracing::warn!("ElevenLabs STT timed out, falling back to SAPI");
+                    sapi_with_timeout(&temp_path).await?
                 }
             }
         } else {
             tracing::info!("No local Whisper or ElevenLabs key — using Windows SAPI");
-            run_offline_sapi_stt(&temp_path).await?
+            sapi_with_timeout(&temp_path).await?
         }
     };
 
@@ -499,6 +529,18 @@ pub fn get_stt_status() -> serde_json::Value {
 
 
 // ── Windows SAPI offline fallback ─────────────────────────────────────────────
+
+/// SAPI with a hard timeout so it can never hang the UI for minutes.
+async fn sapi_with_timeout(wav_path: &PathBuf) -> anyhow::Result<String> {
+    match tokio::time::timeout(std::time::Duration::from_secs(20), run_offline_sapi_stt(wav_path)).await {
+        Ok(Ok(t)) => Ok(t),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow::anyhow!(
+            "Speech transcription timed out. For fast, reliable voice, set up local Whisper \
+             or add an ElevenLabs key (see docs/14_voice_setup.md)."
+        )),
+    }
+}
 
 async fn run_offline_sapi_stt(wav_path: &PathBuf) -> anyhow::Result<String> {
     let path_str = wav_path.to_string_lossy().to_string();

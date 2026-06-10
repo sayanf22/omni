@@ -95,6 +95,40 @@ const glassInner: React.CSSProperties = {
   background: "rgba(10,10,14,0.72)",
 };
 
+// ── Live audio waveform (WisperFlow-style) ────────────────────────────────────
+// Flat bars when silent, bars rise/ripple with the mic level when speaking.
+const Waveform: React.FC<{ level: number }> = ({ level }) => {
+  const bars = 9;
+  // Per-bar height multipliers create an organic centered shape.
+  const shape = [0.35, 0.55, 0.75, 0.9, 1.0, 0.9, 0.75, 0.55, 0.35];
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 3, height: 22 }}>
+      {Array.from({ length: bars }).map((_, i) => {
+        const min = 3;
+        const max = 20;
+        // Idle: tiny flat bars. Active: scale by level * per-bar shape, with a
+        // little phase variation so it ripples instead of moving as one block.
+        const phase = 0.75 + 0.25 * Math.sin((i / bars) * Math.PI * 2 + level * 6);
+        const h = level < 0.04
+          ? min
+          : Math.max(min, Math.min(max, min + level * (max - min) * shape[i] * phase * 1.6));
+        return (
+          <span
+            key={i}
+            style={{
+              width: 3,
+              height: h,
+              borderRadius: 2,
+              background: "linear-gradient(180deg, #a78bfa, #38bdf8)",
+              transition: "height 90ms cubic-bezier(0.4,0,0.2,1)",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export const FloatingOverlay: React.FC = () => {
@@ -106,6 +140,7 @@ export const FloatingOverlay: React.FC = () => {
   const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
   const [question, setQuestion] = useState<{ id: string; question: string } | null>(null);
   const [answer, setAnswer] = useState("");
+  const [audioLevel, setAudioLevel] = useState(0); // 0..1 live mic level for the waveform
   const cardRef = useRef<HTMLDivElement>(null);
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -153,6 +188,11 @@ export const FloatingOverlay: React.FC = () => {
         setHeaderText("Listening…");
         setHeard("");
         setSteps([]);
+      }));
+
+      // Live mic level for the reactive waveform
+      cleanups.push(await listen<number>("voice:level", (e) => {
+        setAudioLevel(typeof e.payload === "number" ? e.payload : 0);
       }));
 
       // Mic stop
@@ -333,16 +373,22 @@ export const FloatingOverlay: React.FC = () => {
               </span>
             </div>
 
-            {/* Header text */}
-            <p style={{
-              flex: 1, minWidth: 0,
-              color: "rgba(255,255,255,0.75)",
-              fontSize: 11, fontWeight: 500,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              lineHeight: 1.3,
-            }}>
-              {headerText}
-            </p>
+            {/* Header text OR live waveform when listening */}
+            {state === "listening" ? (
+              <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Waveform level={audioLevel} />
+              </div>
+            ) : (
+              <p style={{
+                flex: 1, minWidth: 0,
+                color: "rgba(255,255,255,0.75)",
+                fontSize: 11, fontWeight: 500,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                lineHeight: 1.3,
+              }}>
+                {headerText}
+              </p>
+            )}
 
             {/* Controls */}
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>

@@ -186,7 +186,7 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
                 let _ = overlay.show();
                 let _ = overlay.set_focus();
             }
-            if let Err(e) = crate::voice::stt::start_mic_recording() {
+            if let Err(e) = crate::voice::stt::start_mic_recording(app.clone()) {
                 tracing::error!("Failed to start mic recording: {:?}", e);
             }
             let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
