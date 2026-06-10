@@ -22,7 +22,7 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type OverlayState = "idle" | "listening" | "thinking" | "working" | "approval" | "success" | "error";
+type OverlayState = "idle" | "listening" | "thinking" | "working" | "approval" | "question" | "success" | "error";
 
 interface StepEntry {
   step_num: number;
@@ -103,6 +103,8 @@ export const FloatingOverlay: React.FC = () => {
   const [steps, setSteps] = useState<StepEntry[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
+  const [question, setQuestion] = useState<{ id: string; question: string } | null>(null);
+  const [answer, setAnswer] = useState("");
   const cardRef = useRef<HTMLDivElement>(null);
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -114,7 +116,7 @@ export const FloatingOverlay: React.FC = () => {
     });
   }, []);
 
-  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, syncHeight]);
+  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, question, syncHeight]);
 
   // Clear any pending auto-hide
   const clearAutoHide = () => {
@@ -206,6 +208,15 @@ export const FloatingOverlay: React.FC = () => {
         setPermReq(e.payload);
       }));
 
+      // Free-text question — morph into chat input mode
+      cleanups.push(await listen<{ id: string; question: string }>("question:request", async (e) => {
+        await show();
+        await win().setFocus();
+        setQuestion(e.payload);
+        setAnswer("");
+        setState("question");
+      }));
+
       // Done
       cleanups.push(await listen<any>("task:done", async (e) => {
         setState("success");
@@ -244,6 +255,19 @@ export const FloatingOverlay: React.FC = () => {
     } catch (e) { console.error(e); }
   };
 
+  const handleSubmitAnswer = async () => {
+    if (!question) return;
+    const ans = answer.trim();
+    if (!ans) return;
+    try {
+      await invoke("answer_question", { id: question.id, answer: ans });
+      setQuestion(null);
+      setAnswer("");
+      setState("working");
+      setHeaderText("Got it, continuing…");
+    } catch (e) { console.error(e); }
+  };
+
   const handleCancel = async () => {
     try { await invoke("cancel_task"); } catch (_) {}
     setState("idle");
@@ -262,6 +286,7 @@ export const FloatingOverlay: React.FC = () => {
     thinking:  { color: "#818CF8", bg: "rgba(129,140,248,0.15)", border: "rgba(129,140,248,0.3)", label: "Thinking",  icon: <Loader2 size={13} className="animate-spin" /> },
     working:   { color: "#38bdf8", bg: "rgba(56,189,248,0.15)",  border: "rgba(56,189,248,0.3)",  label: "Working",   icon: <Loader2 size={13} className="animate-spin" /> },
     approval:  { color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.35)", label: "Approval", icon: <ShieldAlert size={13} /> },
+    question:  { color: "#38bdf8", bg: "rgba(56,189,248,0.15)",  border: "rgba(56,189,248,0.35)", label: "Question", icon: <Mic size={13} /> },
     success:   { color: "#34d399", bg: "rgba(52,211,153,0.15)",  border: "rgba(52,211,153,0.3)",  label: "Done",      icon: <CheckCircle2 size={13} /> },
     error:     { color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.3)", label: "Error",     icon: <AlertCircle size={13} /> },
   } as const;
@@ -521,6 +546,87 @@ export const FloatingOverlay: React.FC = () => {
                       Approve ✓
                     </button>
                   </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ── Question chat (morphs in smoothly) ──────────────────────────── */}
+          <AnimatePresence>
+            {state === "question" && question && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.28, ease: [0.34, 1.1, 0.64, 1] }}
+              >
+                <div style={{
+                  padding: "12px 12px 14px",
+                  borderTop: "1px solid rgba(56,189,248,0.2)",
+                  background: "linear-gradient(180deg, rgba(56,189,248,0.05), transparent)",
+                }}>
+                  {/* The question */}
+                  <motion.p
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.08 }}
+                    style={{
+                      color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: 600,
+                      lineHeight: 1.45, marginBottom: 10, wordBreak: "break-word",
+                    }}
+                  >
+                    {question.question}
+                  </motion.p>
+
+                  {/* Chat input */}
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.97 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.12 }}
+                    style={{ position: "relative", display: "flex", gap: 7 }}
+                  >
+                    <input
+                      autoFocus
+                      value={answer}
+                      onChange={(e) => setAnswer(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); handleSubmitAnswer(); }
+                      }}
+                      placeholder="Type your answer…"
+                      style={{
+                        flex: 1,
+                        background: "rgba(255,255,255,0.06)",
+                        border: "1px solid rgba(56,189,248,0.3)",
+                        borderRadius: 11,
+                        padding: "9px 12px",
+                        color: "#f4f4f5",
+                        fontSize: 12,
+                        outline: "none",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                    <button
+                      onClick={handleSubmitAnswer}
+                      disabled={!answer.trim()}
+                      style={{
+                        flexShrink: 0,
+                        padding: "0 14px",
+                        background: answer.trim()
+                          ? "linear-gradient(135deg, rgba(56,189,248,0.4), rgba(14,165,233,0.3))"
+                          : "rgba(255,255,255,0.05)",
+                        border: `1px solid ${answer.trim() ? "rgba(56,189,248,0.5)" : "rgba(255,255,255,0.1)"}`,
+                        borderRadius: 11,
+                        color: answer.trim() ? "#7dd3fc" : "rgba(255,255,255,0.3)",
+                        fontSize: 12, fontWeight: 700,
+                        cursor: answer.trim() ? "pointer" : "default",
+                      }}
+                    >
+                      Send
+                    </button>
+                  </motion.div>
+                  <p style={{ color: "rgba(255,255,255,0.25)", fontSize: 9, marginTop: 7 }}>
+                    Press Enter to send · agent is paused
+                  </p>
                 </div>
               </motion.div>
             )}

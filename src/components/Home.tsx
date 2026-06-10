@@ -38,6 +38,9 @@ export const Home: React.FC = () => {
   const [liveSteps, setLiveSteps] = useState<StepProgress[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
   const [isTaskRunning, setIsTaskRunning] = useState(false);
+  // Pending question from the agent (free-text answer needed)
+  const [pendingQuestion, setPendingQuestion] = useState<{ id: string; question: string } | null>(null);
+  const [answerText, setAnswerText] = useState("");
 
   // Find the active vision model
   const activeVisionModel = models.find((m) => m.is_active && m.role_vision);
@@ -74,6 +77,7 @@ export const Home: React.FC = () => {
         await listen<any>("task:done", () => {
           setStatus("success");
           setIsTaskRunning(false);
+          setPendingQuestion(null);
           fetchLocalData();
           // Auto-reset to idle after 3s
           setTimeout(() => setStatus("idle"), 3000);
@@ -84,6 +88,7 @@ export const Home: React.FC = () => {
         await listen<any>("task:failed", (event) => {
           setStatus("error");
           setIsTaskRunning(false);
+          setPendingQuestion(null);
           setErrorMsg(event.payload?.error || "Task failed.");
           fetchLocalData();
         })
@@ -93,7 +98,16 @@ export const Home: React.FC = () => {
         await listen("agent:killed", () => {
           setStatus("idle");
           setIsTaskRunning(false);
+          setPendingQuestion(null);
           setLiveSteps([]);
+        })
+      );
+
+      // Agent asks a free-text question — show the answer box
+      cleanups.push(
+        await listen<{ id: string; question: string }>("question:request", (event) => {
+          setPendingQuestion({ id: event.payload.id, question: event.payload.question });
+          setAnswerText("");
         })
       );
 
@@ -144,9 +158,24 @@ export const Home: React.FC = () => {
       await invoke("cancel_task");
       setStatus("idle");
       setIsTaskRunning(false);
+      setPendingQuestion(null);
       setLiveSteps([]);
     } catch (e) {
       console.error("Failed to cancel task", e);
+    }
+  };
+
+  // Submit the typed answer to the agent's question
+  const handleSubmitAnswer = async () => {
+    if (!pendingQuestion) return;
+    const ans = answerText.trim();
+    if (!ans) return;
+    try {
+      await invoke("answer_question", { id: pendingQuestion.id, answer: ans });
+      setPendingQuestion(null);
+      setAnswerText("");
+    } catch (e) {
+      console.error("Failed to submit answer", e);
     }
   };
 
@@ -324,6 +353,47 @@ export const Home: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Agent Question — chat answer box (appears only when agent asks something) */}
+      {pendingQuestion && (
+        <div className="bg-gradient-to-br from-accent/10 to-surface border-2 border-accent/40 rounded-xl p-5 shadow-lg space-y-3 animate-[fadeIn_0.25s_ease-out]">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-accent/20 border border-accent/40 flex items-center justify-center shrink-0">
+              <AlertCircle className="w-4 h-4 text-accent" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-bold text-accent uppercase tracking-wider mb-1">Agent needs your answer</p>
+              <p className="text-sm font-semibold text-text leading-snug">{pendingQuestion.question}</p>
+            </div>
+          </div>
+          <div className="relative">
+            <input
+              autoFocus
+              value={answerText}
+              onChange={(e) => setAnswerText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmitAnswer();
+                }
+              }}
+              placeholder="Type your answer and press Enter…"
+              className="w-full bg-surface2 border border-accent/30 rounded-lg px-4 py-3 pr-14 text-text text-sm focus:outline-none focus:border-accent placeholder:text-text-muted"
+            />
+            <button
+              onClick={handleSubmitAnswer}
+              disabled={!answerText.trim()}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-accent hover:bg-accent-hover text-accent-contrast rounded-md transition-colors disabled:opacity-40"
+              title="Send answer (Enter)"
+            >
+              <Play className="w-4 h-4 fill-current" />
+            </button>
+          </div>
+          <p className="text-[10px] text-text-muted">
+            The agent is paused waiting for this answer. You can also answer from the floating overlay.
+          </p>
+        </div>
+      )}
 
       {/* Command Box — always visible, disabled while running */}
       <div className="bg-surface border border-border rounded-xl p-5 shadow-sm space-y-3">

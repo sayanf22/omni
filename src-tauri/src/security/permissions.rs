@@ -22,12 +22,14 @@ pub fn get_permission_gate() -> &'static PermissionGate {
 
 pub struct PermissionGate {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_answers: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
 }
 
 impl PermissionGate {
     pub fn new() -> Self {
         Self {
             pending: Arc::new(Mutex::new(HashMap::new())),
+            pending_answers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -78,10 +80,67 @@ impl PermissionGate {
             let _ = tx.send(approved);
         }
     }
+
+    /// Emits a free-text QUESTION to all windows and awaits the user's typed answer.
+    /// Returns None if the user cancelled or timed out (5 min for typed answers).
+    pub async fn request_answer(
+        &self,
+        id: String,
+        question: String,
+        app: &AppHandle,
+    ) -> Option<String> {
+        let (tx, rx) = oneshot::channel();
+
+        {
+            let mut lock = self.pending_answers.lock().await;
+            lock.insert(id.clone(), tx);
+        }
+
+        // Show the overlay so the user can answer there too
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.show();
+            let _ = overlay.set_focus();
+        }
+
+        // Broadcast the question to ALL windows
+        if let Err(e) = app.emit("question:request", serde_json::json!({
+            "id": id, "question": question
+        })) {
+            eprintln!("Failed to emit question request: {:?}", e);
+            let mut lock = self.pending_answers.lock().await;
+            lock.remove(&id);
+            return None;
+        }
+
+        // Await the typed answer with a generous 5-minute timeout
+        tokio::select! {
+            res = rx => res.ok().filter(|s| !s.is_empty()),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+                let mut lock = self.pending_answers.lock().await;
+                lock.remove(&id);
+                None
+            }
+        }
+    }
+
+    /// Resolves a pending question with the user's typed answer.
+    /// An empty string signals cancellation.
+    pub async fn submit_answer(&self, id: &str, answer: String) {
+        let mut lock = self.pending_answers.lock().await;
+        if let Some(tx) = lock.remove(id) {
+            let _ = tx.send(answer);
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn approve_request(id: String, approved: bool) -> Result<(), String> {
     get_permission_gate().respond(&id, approved).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn answer_question(id: String, answer: String) -> Result<(), String> {
+    get_permission_gate().submit_answer(&id, answer).await;
     Ok(())
 }

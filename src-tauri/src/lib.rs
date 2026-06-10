@@ -12,7 +12,7 @@ use automation::screen::take_screenshot;
 use automation::ocr::{ocr_screen, find_text_on_screen};
 use automation::uia::get_ui_tree;
 use automation::input::{mouse_click, type_text, press_key, press_hotkey};
-use automation::process::{launch_app, focus_window, list_running_apps};
+use automation::process::{launch_app, focus_window, list_running_apps, get_running_windows};
 
 // Imports from storage
 use storage::keychain::{save_api_key, get_api_key, has_api_key, delete_api_key};
@@ -27,7 +27,7 @@ use storage::supabase::{
 };
 
 // Imports from other modules
-use security::permissions::approve_request;
+use security::permissions::{approve_request, answer_question};
 use agent::planner::{run_task, cancel_task};
 use agent::sidecar::SidecarState;
 use ai::test_model_connection;
@@ -186,6 +186,7 @@ pub fn run() {
             launch_app,
             focus_window,
             list_running_apps,
+            get_running_windows,
             save_api_key,
             get_api_key,
             has_api_key,
@@ -204,6 +205,7 @@ pub fn run() {
             get_unsynced_local_audit,
             mark_audit_synced_local,
             approve_request,
+            answer_question,
             run_task,
             cancel_task,
             test_model_connection,

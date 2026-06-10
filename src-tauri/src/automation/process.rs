@@ -421,6 +421,57 @@ fn launch_uwp(aumid: &str) -> anyhow::Result<u32> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Find the best-matching Start Menu .lnk shortcut path for an app name.
+/// Launching the shortcut is the most reliable universal method — Windows
+/// resolves it correctly for BOTH Store and desktop apps.
+fn find_start_menu_shortcut(name_lower: &str) -> Option<PathBuf> {
+    let mut roots: Vec<PathBuf> = vec![
+        PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"),
+    ];
+    if let Some(appdata) = dirs::data_dir() {
+        roots.push(appdata.join(r"Microsoft\Windows\Start Menu\Programs"));
+    }
+
+    fn scan(dir: &std::path::Path, target: &str, best: &mut Option<(usize, PathBuf)>, depth: u8) {
+        if depth > 4 { return; }
+        let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, target, best, depth + 1);
+            } else if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("lnk")) {
+                if let Some(stem) = path.file_stem() {
+                    let stem_l = stem.to_string_lossy().to_lowercase();
+                    let nl = stem_l.as_str();
+                    if nl.contains("uninstall") { continue; }
+                    // Lower score = better match: exact(0), starts-with(1), contains(2)
+                    let score = if nl == target { 0 }
+                        else if nl.starts_with(target) { 1 }
+                        else if nl.contains(target) { 2 }
+                        else { continue };
+                    let better = match best { Some((s, _)) => score < *s, None => true };
+                    if better { *best = Some((score, path.clone())); }
+                }
+            }
+        }
+    }
+
+    let mut best: Option<(usize, PathBuf)> = None;
+    for root in &roots {
+        if root.exists() { scan(root, name_lower, &mut best, 0); }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Launch an app by opening its Start Menu shortcut via ShellExecute.
+fn launch_shortcut(lnk: &std::path::Path) -> anyhow::Result<u32> {
+    let child = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &lnk.to_string_lossy()])
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to launch shortcut {:?}: {}", lnk, e))?;
+    Ok(child.id())
+}
+
 /// Searches and launches an application by name using a 4-tier strategy:
 ///
 /// Tier 1 — Known AUMID table (instant, covers WhatsApp, Spotify, Telegram, etc.)
@@ -452,7 +503,17 @@ pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
         }
     }
 
-    // ── Tier 3: Runtime UWP discovery via PowerShell ────────────────────────
+    // ── Tier 3: Start Menu shortcut (universal — Store + desktop apps) ──────
+    // Most reliable method for any installed app: launch its .lnk shortcut.
+    // Windows resolves it correctly whether it's a UWP or classic app.
+    if let Some(lnk) = find_start_menu_shortcut(&name_lower) {
+        tracing::debug!("launch_app: Start Menu shortcut hit for '{}' -> {:?}", name, lnk);
+        if let Ok(pid) = launch_shortcut(&lnk) {
+            return Ok(pid);
+        }
+    }
+
+    // ── Tier 4: Runtime UWP discovery via PowerShell ────────────────────────
     tracing::debug!("launch_app: trying PowerShell UWP discovery for '{}'", name);
     if let Some(aumid) = find_uwp_aumid(&name_lower) {
         tracing::debug!("launch_app: PowerShell found AUMID '{}' for '{}'", aumid, name);
@@ -462,7 +523,7 @@ pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
         }
     }
 
-    // ── Tier 4: Filesystem scan ─────────────────────────────────────────────
+    // ── Tier 5: Filesystem scan ─────────────────────────────────────────────
     tracing::debug!("launch_app: filesystem scan for '{}'", name);
     if let Some(exe) = search_exe_in_dirs(&name_lower) {
         tracing::debug!("launch_app: fs scan found {:?}", exe);
@@ -472,13 +533,13 @@ pub fn launch_app_internal(name: &str) -> anyhow::Result<u32> {
         return Ok(child.id());
     }
 
-    // ── Tier 5: PATH lookup ──────────────────────────────────────────────────
+    // ── Tier 6: PATH lookup ──────────────────────────────────────────────────
     tracing::debug!("launch_app: PATH lookup for '{}'", name);
     if let Ok(pid) = launch_via_path(&name_lower) {
         return Ok(pid);
     }
 
-    // ── Tier 6: Direct spawn (last resort) ──────────────────────────────────
+    // ── Tier 7: Direct spawn (last resort) ──────────────────────────────────
     tracing::debug!("launch_app: direct spawn for '{}'", name);
     let child = std::process::Command::new(name)
         .spawn()
@@ -532,6 +593,128 @@ pub fn is_app_running(name: &str) -> bool {
     list_running_apps_internal()
         .iter()
         .any(|app| app.name.to_lowercase().contains(&name_lower))
+}
+
+/// Builds a concise "system awareness" snapshot for the agent: what windows are
+/// currently open, so the agent can focus an already-running app instead of
+/// re-launching it, and reason strategically about the desktop state.
+/// Fast — only enumerates visible windows (no PowerShell, no disk scan).
+pub fn get_system_context() -> String {
+    let windows = list_running_apps_internal();
+    // Filter out our own windows and empty/system titles
+    let mut titles: Vec<String> = windows
+        .into_iter()
+        .map(|w| w.name)
+        .filter(|t| {
+            let tl = t.to_lowercase();
+            !t.trim().is_empty()
+                && !tl.contains("omni")
+                && tl != "program manager"
+                && tl != "windows input experience"
+                && tl != "microsoft text input application"
+        })
+        .collect();
+    titles.sort();
+    titles.dedup();
+
+    let open_section = if titles.is_empty() {
+        "No application windows are currently open.".to_string()
+    } else {
+        let shown: Vec<String> = titles.into_iter().take(25).collect();
+        format!(
+            "Currently OPEN windows (use 'app focus' to switch to one instead of re-opening):\n- {}",
+            shown.join("\n- ")
+        )
+    };
+
+    // Installed apps (cached after first call) — lets the agent know exactly
+    // what it can open, so it never guesses or wrongly says "not installed".
+    let installed = list_installed_app_names();
+    let installed_section = if installed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nINSTALLED apps on this PC (open any with 'app open name=<name>'):\n{}",
+            installed.join(", ")
+        )
+    };
+
+    format!("{}{}", open_section, installed_section)
+}
+
+/// Returns a de-duplicated, lowercased-friendly list of installed application
+/// names by scanning Start Menu shortcuts (.lnk) for both all-users and the
+/// current user. This is FAST (filesystem only, no PowerShell) and covers BOTH
+/// Microsoft Store apps and traditional desktop apps. Cached for the session.
+pub fn list_installed_app_names() -> Vec<String> {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<Option<Vec<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some(ref cached) = *guard {
+            return cached.clone();
+        }
+    }
+
+    let mut names: BTreeSet<String> = BTreeSet::new();
+
+    // Start Menu shortcut roots
+    let mut roots: Vec<PathBuf> = Vec::new();
+    roots.push(PathBuf::from(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"));
+    if let Some(appdata) = dirs::data_dir() {
+        roots.push(appdata.join(r"Microsoft\Windows\Start Menu\Programs"));
+    }
+
+    fn scan_dir(dir: &std::path::Path, names: &mut std::collections::BTreeSet<String>, depth: u8) {
+        if depth > 4 { return; }
+        let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan_dir(&path, names, depth + 1);
+            } else if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("lnk")) {
+                if let Some(stem) = path.file_stem() {
+                    let name = stem.to_string_lossy().trim().to_string();
+                    let nl = name.to_lowercase();
+                    // Skip uninstallers, docs, and noise
+                    if !name.is_empty()
+                        && !nl.contains("uninstall")
+                        && !nl.contains("readme")
+                        && !nl.contains("help")
+                        && !nl.contains("documentation")
+                        && !nl.contains("release notes")
+                        && !nl.contains("website")
+                        && name.len() < 40
+                    {
+                        names.insert(name);
+                    }
+                }
+            }
+        }
+    }
+
+    for root in &roots {
+        if root.exists() {
+            scan_dir(root, &mut names, 0);
+        }
+    }
+
+    // Cap to keep the prompt lean
+    let result: Vec<String> = names.into_iter().take(60).collect();
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(result.clone());
+    }
+    result
+}
+
+/// Tauri command — expose system context to the frontend if needed.
+#[tauri::command]
+pub fn get_running_windows() -> Vec<AppInfo> {
+    list_running_apps_internal()
 }
 
 // ── Tauri IPC wrappers ────────────────────────────────────────────────────────
