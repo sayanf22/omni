@@ -269,14 +269,13 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         let _ = overlay.set_focus();
     }
 
-    // ── Takeover: block the user's physical mouse/keyboard so they don't fight
-    // the agent. The agent's own synthetic input still works. Double-Esc returns
-    // control. Gated by the takeover_mode setting (default ON).
+    // ── Takeover: blocking is started LAZILY — only when the agent performs its
+    // first real mouse/keyboard action, NOT during the (possibly slow) planning
+    // phase. That way the planning phase never freezes the user's input, and the
+    // user can always cancel. Double-Esc returns control once blocking is active.
     let takeover_on = crate::storage::sqlite::get_setting_internal("takeover_mode")
         .ok().flatten().map(|v| v != "false").unwrap_or(true);
-    if takeover_on {
-        crate::automation::takeover::start();
-    }
+    let mut takeover_started = false;
 
     // Determine task type + check vision availability
     let task_type = detect_task_type(&instruction);
@@ -925,6 +924,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 }
 
                 // Execute tool
+                // Start takeover lazily on the first real input action (mouse/keyboard),
+                // so the planning phase never blocks the user's input.
+                if takeover_on && !takeover_started && matches!(name, "mouse" | "keyboard") {
+                    crate::automation::takeover::start();
+                    takeover_started = true;
+                }
                 let (outcome_text, success) = match tool.execute(tool_params.clone()).await {
                     Ok(out) => (out, true),
                     Err(e) => (format!("Tool '{}' failed: {}", name, e), false),

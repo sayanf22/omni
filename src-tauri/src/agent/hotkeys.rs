@@ -191,7 +191,15 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
                 return;
             }
             if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.unminimize();
                 let _ = overlay.show();
+                let _ = overlay.set_always_on_top(true);
+                if let Ok(Some(monitor)) = overlay.primary_monitor() {
+                    let scale = monitor.scale_factor();
+                    let screen_w = monitor.size().width as f64 / scale;
+                    let x = (screen_w - 360.0).max(0.0);
+                    let _ = overlay.set_position(tauri::LogicalPosition::new(x, 16.0));
+                }
                 let _ = overlay.set_focus();
             }
             let _ = app.emit("hotkey:mic_start", serde_json::json!({}));

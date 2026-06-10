@@ -202,6 +202,13 @@ export const FloatingOverlay: React.FC = () => {
       cleanups.push(await listen("takeover:started", () => setControlling(true)));
       cleanups.push(await listen("takeover:ended", () => setControlling(false)));
 
+      // Mic test finished (from Settings) — show briefly then hide.
+      cleanups.push(await listen("voice:test_result", async () => {
+        setState("idle");
+        setHeard("");
+        await hideWindow();
+      }));
+
       // Mic stop
       cleanups.push(await listen("hotkey:mic_stop", () => {
         setState("thinking");

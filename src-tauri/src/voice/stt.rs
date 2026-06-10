@@ -688,28 +688,47 @@ async fn try_local_whisper(wav_path: &PathBuf) -> Option<String> {
 
     tracing::info!("Using local Whisper: {:?} with model {:?}", bin, model);
 
-    // -nt = no timestamps, -np = no progress prints, output transcription to stdout.
+    // Write a .txt next to the wav (-otxt) AND read stdout — most reliable.
+    let out_base = wav_path.with_extension(""); // whisper appends .txt
+    let txt_path = wav_path.with_extension("txt");
+    let _ = std::fs::remove_file(&txt_path);
+
     let output = tokio::process::Command::new(&bin)
         .args([
             "-m", &model.to_string_lossy(),
             "-f", &wav_path.to_string_lossy(),
-            "-nt", "-np",
             "-l", "en",
-            "-t", "4", // threads
+            "-nt",                 // no timestamps
+            "-otxt",               // write <wav>.txt
+            "-of", &out_base.to_string_lossy(),
+            "-t", "4",
         ])
+        // Run with the whisper dir as CWD so its DLLs resolve.
+        .current_dir(whisper_dir())
         .output()
         .await
         .ok()?;
 
     if !output.status.success() {
-        tracing::warn!("Local Whisper exited with error: {}", String::from_utf8_lossy(&output.stderr));
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("Local Whisper exited with error: {}", stderr);
+        // Still try reading any partial txt below.
     }
 
+    // 1) Prefer the .txt file output.
+    if let Ok(text) = std::fs::read_to_string(&txt_path) {
+        let _ = std::fs::remove_file(&txt_path);
+        let clean = text.trim().to_string();
+        if !clean.is_empty() {
+            return Some(clean);
+        }
+    }
+
+    // 2) Fall back to parsing stdout.
     let text = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('[') && !l.starts_with("whisper_"))
+        .filter(|l| !l.is_empty() && !l.starts_with('[') && !l.starts_with("whisper_") && !l.starts_with("main:"))
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
@@ -722,7 +741,15 @@ async fn try_local_whisper(wav_path: &PathBuf) -> Option<String> {
 /// and emits `voice:test_result` with the text. Does NOT run an agent task.
 #[tauri::command]
 pub fn start_voice_test(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
     TEST_MODE.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Show the top-right overlay with the live waveform during the test.
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.show();
+        let _ = overlay.set_always_on_top(true);
+        let _ = overlay.set_focus();
+    }
+    let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
     start_mic_recording(app).map_err(|e| {
         TEST_MODE.store(false, std::sync::atomic::Ordering::SeqCst);
         e.to_string()
