@@ -82,14 +82,31 @@ It works with zero setup but is the least accurate — fine for simple commands.
 
 ---
 
-## Spoken results (the agent tells you what it did) — LOCAL, no setup
+## Spoken results (the agent tells you what it did)
 
-After finishing a task, Omni **speaks the result aloud** using Windows' built-in
-text-to-speech (System.Speech) — fully offline, no API key, no internet.
+After finishing a task, Omni **speaks the result aloud**. Voice engines, most natural first:
 
-- Works out of the box (`tts_engine` = `local`, the default).
-- Toggle off with the setting `speak_results` = `false`.
-- For higher-quality cloud voice, set `tts_engine` = `cloud` and add an ElevenLabs key.
+1. **Cloud (OpenAI tts-1 / ElevenLabs)** — only when `tts_engine` = `cloud` and a key exists.
+2. **Piper** — open-source local neural TTS. Sounds far more human than the Windows voice.
+   Fully offline, no key. *(if installed — see below)*
+3. **Windows SAPI** — built-in, robotic, but always works with zero setup.
+
+Toggle speaking off with the setting `speak_results` = `false`.
+
+### Natural voice — Piper (offline, human-like) ✅ recommended
+
+The built-in Windows voice sounds robotic. **Piper** is an open-source neural TTS that
+runs 100% on your PC and sounds like a normal AI assistant. One-click download in
+**Settings → System Integrations → Natural Voice — Piper** (~65 MB):
+
+- Engine: `piper_windows_amd64.zip` from https://github.com/rhasspy/piper/releases
+- Voice: `en_US-amy-medium` (+ its `.onnx.json` config) from
+  https://huggingface.co/rhasspy/piper-voices
+
+Everything installs into `%APPDATA%\Omni\piper\`. Once present, the agent speaks with
+Piper automatically (no setting change needed). To use a different voice, drop another
+`*.onnx` + matching `*.onnx.json` from the piper-voices repo into that folder.
 
 So a full voice loop is now local end-to-end:
-**press hotkey → speak → (local Whisper transcribes) → agent acts → agent speaks the result back.**
+**press hotkey → speak → (local Whisper transcribes) → agent acts → agent speaks the result back with a natural Piper voice.**
+

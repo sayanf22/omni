@@ -1,10 +1,13 @@
 use std::process::Command;
 use crate::storage::keychain::get_key;
 use std::io::Cursor;
+use std::path::PathBuf;
 use rodio::{Decoder, OutputStream, Sink};
 
-/// Speaks text aloud. Order: local Windows TTS by default (offline, zero-setup),
-/// or ElevenLabs if a key is configured AND the user opted into cloud voice.
+/// Speaks text aloud. Priority (most natural first):
+///   1. Cloud (OpenAI tts-1 / ElevenLabs) — only when engine == "cloud" and a key exists.
+///   2. Piper — local neural TTS, natural sounding, fully offline (if installed).
+///   3. Windows SAPI — robotic but always available, zero setup.
 pub async fn speak_text(text: &str) -> anyhow::Result<()> {
     let text = text.trim();
     if text.is_empty() { return Ok(()); }
@@ -32,7 +35,16 @@ pub async fn speak_text(text: &str) -> anyhow::Result<()> {
         }
     }
 
-    // Local Windows TTS (offline, no key, no window flash).
+    // Piper — natural-sounding local neural TTS (offline, no key). This is the
+    // default "normal AI voice" when the user has downloaded the Piper voice.
+    if piper_available() {
+        match try_piper_tts(text) {
+            Ok(audio_bytes) => { play_audio(audio_bytes); return Ok(()); }
+            Err(e) => eprintln!("Piper TTS error, falling back to SAPI: {:?}", e),
+        }
+    }
+
+    // Windows SAPI (offline, no key, no window flash) — robotic last resort.
     speak_offline(text)
 }
 
@@ -148,4 +160,219 @@ fn speak_offline(text: &str) -> anyhow::Result<()> {
         .spawn()?;
 
     Ok(())
+}
+
+// ── Piper — natural-sounding local neural TTS (offline) ───────────────────────
+
+/// Directory where the Piper engine + voice model live: %APPDATA%\Omni\piper\
+pub fn piper_dir() -> PathBuf {
+    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    p.push("Omni");
+    p.push("piper");
+    p
+}
+
+/// Locate the piper.exe binary if installed.
+fn find_piper_binary() -> Option<PathBuf> {
+    let p = piper_dir().join("piper.exe");
+    if p.exists() { Some(p) } else { None }
+}
+
+/// Locate a Piper voice model (any *.onnx) in the piper dir.
+fn find_piper_model() -> Option<PathBuf> {
+    let dir = piper_dir();
+    // Prefer a known natural English voice if present.
+    for preferred in ["en_US-amy-medium.onnx", "en_US-lessac-medium.onnx", "en_US-ryan-medium.onnx"] {
+        let p = dir.join(preferred);
+        if p.exists() { return Some(p); }
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().map_or(false, |x| x == "onnx") {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// True if a usable Piper engine (binary + model + its .onnx.json config) is installed.
+pub fn piper_available() -> bool {
+    if find_piper_binary().is_none() { return false; }
+    match find_piper_model() {
+        Some(m) => {
+            // Piper requires the matching <model>.onnx.json config alongside it.
+            let cfg = PathBuf::from(format!("{}.json", m.to_string_lossy()));
+            cfg.exists()
+        }
+        None => false,
+    }
+}
+
+/// Synthesize `text` to WAV bytes using the local Piper engine.
+/// Pipes text to piper.exe stdin; piper writes a WAV we read back and return.
+fn try_piper_tts(text: &str) -> anyhow::Result<Vec<u8>> {
+    use std::os::windows::process::CommandExt;
+    use std::io::Write;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let bin = find_piper_binary().ok_or_else(|| anyhow::anyhow!("piper.exe not found"))?;
+    let model = find_piper_model().ok_or_else(|| anyhow::anyhow!("no piper voice model"))?;
+
+    // Cap very long text so playback isn't a monologue (results are short).
+    let capped: String = text.chars().take(800).collect();
+
+    let out_wav = std::env::temp_dir().join("omni_tts_piper.wav");
+    let _ = std::fs::remove_file(&out_wav);
+
+    let mut child = Command::new(&bin)
+        .args([
+            "--model", &model.to_string_lossy(),
+            "--output_file", &out_wav.to_string_lossy(),
+        ])
+        // Run inside the piper dir so its DLLs + espeak-ng-data resolve.
+        .current_dir(piper_dir())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(capped.as_bytes())?;
+        // Drop stdin to signal EOF so piper starts synthesizing.
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("piper exited with error: {}", stderr));
+    }
+
+    let bytes = std::fs::read(&out_wav)
+        .map_err(|e| anyhow::anyhow!("piper produced no WAV: {}", e))?;
+    let _ = std::fs::remove_file(&out_wav);
+    if bytes.is_empty() {
+        return Err(anyhow::anyhow!("piper produced an empty WAV"));
+    }
+    Ok(bytes)
+}
+
+/// Stream-download a URL to a file, emitting progress as `piper:download`.
+async fn piper_download_file(url: &str, dest: &PathBuf, app: &tauri::AppHandle, stage: &str) -> anyhow::Result<()> {
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+    use futures_util::StreamExt;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(900))
+        .build()?;
+    let resp = client.get(url)
+        .header("User-Agent", "Omni-Agent")
+        .send().await?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!("Download failed ({}): {}", resp.status(), url));
+    }
+    let total = resp.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = resp.bytes_stream();
+    let mut last_pct = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        if total > 0 {
+            let pct = downloaded * 100 / total;
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = app.emit("piper:download", serde_json::json!({"stage": stage, "pct": pct}));
+            }
+        }
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+/// Extract the Piper Windows zip into `dir`, stripping the leading `piper/`
+/// folder so files land directly in `dir` (preserves the espeak-ng-data tree).
+fn extract_piper_zip(zip_path: &PathBuf, dir: &PathBuf) -> anyhow::Result<()> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let Some(enclosed) = entry.enclosed_name() else { continue };
+        // Strip the leading top-level component (the "piper/" wrapper folder).
+        let mut comps = enclosed.components();
+        comps.next(); // drop first component
+        let rel: PathBuf = comps.as_path().to_path_buf();
+        if rel.as_os_str().is_empty() { continue; }
+        let out_path = dir.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Tauri command — download the Piper engine + a natural English voice into
+/// %APPDATA%\Omni\piper\ for offline, natural-sounding speech. Emits
+/// `piper:download` progress. Safe to call repeatedly (skips existing files).
+#[tauri::command]
+pub async fn download_piper(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Emitter;
+    let dir = piper_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // 1) Engine (piper.exe + DLLs + espeak-ng-data) — stable pinned release.
+    if find_piper_binary().is_none() {
+        let _ = app.emit("piper:download", serde_json::json!({"stage":"engine","pct":0}));
+        let zip_path = dir.join("piper_windows.zip");
+        piper_download_file(
+            "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip",
+            &zip_path, &app, "engine",
+        ).await.map_err(|e| format!("Engine download failed: {}", e))?;
+        extract_piper_zip(&zip_path, &dir).map_err(|e| format!("Engine extract failed: {}", e))?;
+        let _ = std::fs::remove_file(&zip_path);
+    }
+
+    // 2) Natural English voice model (~63 MB) + its config from HuggingFace.
+    let model_path = dir.join("en_US-amy-medium.onnx");
+    if !model_path.exists() {
+        let _ = app.emit("piper:download", serde_json::json!({"stage":"voice","pct":0}));
+        piper_download_file(
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx",
+            &model_path, &app, "voice",
+        ).await.map_err(|e| format!("Voice download failed: {}", e))?;
+    }
+    let cfg_path = dir.join("en_US-amy-medium.onnx.json");
+    if !cfg_path.exists() {
+        piper_download_file(
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json",
+            &cfg_path, &app, "voice",
+        ).await.map_err(|e| format!("Voice config download failed: {}", e))?;
+    }
+
+    let ok = piper_available();
+    let _ = app.emit("piper:download", serde_json::json!({
+        "stage": if ok { "done" } else { "error" }, "pct": 100
+    }));
+    if ok {
+        Ok("Natural voice (Piper) is ready.".to_string())
+    } else {
+        Err("Piper files missing after download. Check your connection and try again.".to_string())
+    }
+}
+
+/// Tauri command — is the natural Piper voice installed?
+#[tauri::command]
+pub fn piper_installed() -> bool {
+    piper_available()
 }

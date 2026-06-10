@@ -739,6 +739,11 @@ export const Settings: React.FC = () => {
   const [whisperDownloading, setWhisperDownloading] = useState(false);
   const [whisperProgress, setWhisperProgress] = useState<{ stage: string; pct: number } | null>(null);
   const [whisperMsg, setWhisperMsg] = useState<string | null>(null);
+  // Natural voice (Piper) state
+  const [piperInstalled, setPiperInstalled] = useState(false);
+  const [piperDownloading, setPiperDownloading] = useState(false);
+  const [piperProgress, setPiperProgress] = useState<{ stage: string; pct: number } | null>(null);
+  const [piperMsg, setPiperMsg] = useState<string | null>(null);
   // Mic test
   const [voiceTesting, setVoiceTesting] = useState(false);
   const [voiceTestResult, setVoiceTestResult] = useState<{ ok: boolean; text: string; error?: string } | null>(null);
@@ -823,6 +828,39 @@ export const Settings: React.FC = () => {
       setWhisperMsg(typeof e === "string" ? e : (e?.message || "Download failed."));
     } finally {
       setWhisperDownloading(false);
+    }
+  };
+
+  // ── Natural voice (Piper) — local neural TTS, human-like, offline ──────────
+  const refreshPiperStatus = async () => {
+    try { setPiperInstalled(await invoke<boolean>("piper_installed")); } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    refreshPiperStatus();
+    let un: (() => void) | null = null;
+    listen<{ stage: string; pct: number }>("piper:download", (e) => {
+      setPiperProgress(e.payload);
+      if (e.payload.stage === "done" || e.payload.stage === "error") {
+        setPiperDownloading(false);
+        refreshPiperStatus();
+      }
+    }).then((fn) => { un = fn; });
+    return () => { if (un) un(); };
+  }, []);
+
+  const handleDownloadPiper = async () => {
+    setPiperDownloading(true);
+    setPiperMsg(null);
+    setPiperProgress({ stage: "starting", pct: 0 });
+    try {
+      const msg = await invoke<string>("download_piper");
+      setPiperMsg(msg);
+      await refreshPiperStatus();
+    } catch (e: any) {
+      setPiperMsg(typeof e === "string" ? e : (e?.message || "Download failed."));
+    } finally {
+      setPiperDownloading(false);
     }
   };
 
@@ -1173,6 +1211,47 @@ export const Settings: React.FC = () => {
               )
             )}
           </div>
+        </div>
+
+        {/* ── Natural Voice (Piper) — local neural TTS, human-like, offline ── */}
+        <div className="p-4 bg-surface2 border border-border rounded-xl space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-text flex items-center gap-2">
+              Natural Voice — Piper
+              {piperInstalled && (
+                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-success/15 text-success border border-success/25">Active</span>
+              )}
+            </h4>
+            <p className="text-xs text-text-secondary mt-0.5">
+              Open-source neural text-to-speech that runs 100% on your PC — sounds far more
+              human than the basic Windows voice. No API key. One-time download (~65&nbsp;MB).
+            </p>
+          </div>
+
+          {piperDownloading || (piperProgress && piperProgress.stage !== "done") ? (
+            <div className="space-y-1.5">
+              <div className="h-2 rounded-full bg-surface3 overflow-hidden">
+                <div className="h-full bg-accent transition-all duration-200"
+                     style={{ width: `${piperProgress?.pct ?? 0}%` }} />
+              </div>
+              <p className="text-[10px] text-text-muted">
+                {piperProgress?.stage === "engine" ? "Downloading voice engine…"
+                  : piperProgress?.stage === "voice" ? "Downloading natural voice…"
+                  : piperProgress?.stage === "error" ? "Failed — check connection."
+                  : "Starting…"} {piperProgress?.pct ? `${piperProgress.pct}%` : ""}
+              </p>
+            </div>
+          ) : piperInstalled ? (
+            <p className="text-xs text-success font-semibold">✓ Natural voice is installed. The agent now speaks with it automatically.</p>
+          ) : (
+            <button
+              onClick={handleDownloadPiper}
+              className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg transition-colors"
+            >
+              Download natural voice (~65 MB)
+            </button>
+          )}
+          {piperMsg && <p className="text-[10px] text-text-muted">{piperMsg}</p>}
         </div>
 
         {/* ElevenLabs */}

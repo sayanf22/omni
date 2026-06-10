@@ -35,7 +35,7 @@ use ai::client::{probe_model_vision, probe_model_audio, probe_model_video, detec
 use ai::memory::{get_all_memories, delete_memory_item, search_memory_items, add_custom_memory_item};
 use commands::{trigger_mic_start, trigger_mic_stop, trigger_tts_speak};
 use voice::stt::{get_stt_status, download_whisper, start_voice_test};
-use voice::tts::test_elevenlabs_key;
+use voice::tts::{test_elevenlabs_key, download_piper, piper_installed};
 use agent::hotkeys::{set_hotkey, get_hotkeys};
 use tauri::Manager;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -223,6 +223,8 @@ pub fn run() {
             download_whisper,
             start_voice_test,
             test_elevenlabs_key,
+            download_piper,
+            piper_installed,
             get_all_memories,
             delete_memory_item,
             search_memory_items,
