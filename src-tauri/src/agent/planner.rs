@@ -550,6 +550,31 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            6. click it -> type message -> Enter\n\
            CRITICAL: Always use find_text to locate elements. Never guess coordinates.\n\
          \n\
+         ════════════════════════════════════════════\n\
+         MESSAGING SAFETY — VERIFY THE RECIPIENT BEFORE YOU SEND (MANDATORY)\n\
+         ════════════════════════════════════════════\n\
+         Sending a message to the WRONG person/group is a serious, irreversible mistake.\n\
+         Before typing a message into ANY chat, you MUST verify the recipient:\n\
+         A. SEARCH, THEN READ THE RESULTS. After typing the name in the search box, call\n\
+            screen ocr (or find_text) and actually READ the list of results. Do NOT blindly\n\
+            click the first row.\n\
+         B. NO MATCH → ASK, NEVER GUESS. If no result clearly matches the name you were given\n\
+            (common when a spoken name was mis-transcribed), do NOT send to anyone. Ask:\n\
+            {{\"question\":\"I couldn't find a contact named '<name>'. What's the exact name, or who did you mean?\"}}\n\
+         C. AMBIGUOUS / MULTIPLE MATCHES → ASK WHICH ONE. If several contacts match or you are\n\
+            not sure which is correct:\n\
+            {{\"question\":\"I see more than one match for '<name>': <list them>. Which one should I message?\"}}\n\
+         D. GROUP vs PERSON → KNOW WHICH IT IS. Determine from the screen whether the target is a\n\
+            GROUP (group icon, member count, several names under the title) or an INDIVIDUAL.\n\
+            If you cannot tell for sure, ASK before sending:\n\
+            {{\"question\":\"Is '<name>' a group or a single person? I want to send to the right place.\"}}\n\
+            State it in your result afterwards (e.g. 'Sent to the GROUP <name>' or 'Sent to <name> (personal chat)').\n\
+         E. OPEN THE CHAT, THEN CONFIRM THE HEADER. After clicking a result, OCR the chat header\n\
+            at the top and confirm it matches the intended recipient BEFORE typing the message.\n\
+            If the open chat's name does not match, go back and fix it — do not type into the wrong chat.\n\
+         F. Only after the recipient is verified (correct name + group/person known) do you type\n\
+            and send the message. These checks apply even when the message text was given to you.\n\
+         \n\
          == WORKED EXAMPLES ==\n\
          TASK: 'open notepad and write Hello World'\n\
            1 {{\"thought\":\"Open Notepad\",\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"notepad\"}}}}\n\
@@ -593,8 +618,11 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            11 {{\"thought\":\"Type message\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"Hello\"}}}}\n\
            12 {{\"thought\":\"Confirm before sending\",\"tool\":null}} -> {{\"question\":\"Send 'Hello' to Som on WhatsApp?\"}}\n\
            13 {{\"thought\":\"Send\",\"tool\":\"keyboard\",\"params\":{{\"action\":\"key\",\"key\":\"enter\"}}}}\n\
-           14 {{\"done\":true,\"result\":\"Sent 'Hello' to Som on WhatsApp\"}}\n\
+           14 {{\"done\":true,\"result\":\"Sent 'Hello' to Som (personal chat) on WhatsApp\"}}\n\
            NOTE: If the task already includes the message text, DON'T ask what to send — just send it.\n\
+           BUT you must STILL verify the recipient first (MESSAGING SAFETY above): read the search\n\
+           results, confirm 'Som' actually exists and whether it's a person or a group, and confirm\n\
+           the open chat header says 'Som' before typing. If 'Som' has no match, ASK instead of guessing.\n\
          \n\
          == VALID RESPONSE FORMATS ==\n\
          Tool call : {{\"thought\":\"one line why\",\"tool\":\"name\",\"params\":{{...}}}}\n\

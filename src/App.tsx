@@ -12,18 +12,15 @@ import { VoicePill } from "./components/VoicePill";
 
 function App() {
   const { session, setSession, models, fetchLocalData } = useStore();
-  const [windowLabel, setWindowLabel] = useState<string>("main");
+  // Detect the window label SYNCHRONOUSLY on first render. Critical: the overlay
+  // and textinput windows must render their own component immediately and never
+  // briefly mount the full main app (which could error/hang and leave the
+  // floating window as a dark empty box).
+  const [windowLabel] = useState<string>(() => {
+    try { return getCurrentWindow().label; }
+    catch (e) { console.warn("Could not retrieve window label, defaulting to main", e); return "main"; }
+  });
   const [authLoading, setAuthLoading] = useState(true);
-
-  // 1. Detect current window label
-  useEffect(() => {
-    try {
-      const appWindow = getCurrentWindow();
-      setWindowLabel(appWindow.label);
-    } catch (e) {
-      console.warn("Could not retrieve current window label, defaulting to main", e);
-    }
-  }, []);
 
   // 2. Setup secure backend auth session check on startup
   useEffect(() => {

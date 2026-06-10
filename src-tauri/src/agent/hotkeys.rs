@@ -110,6 +110,8 @@ pub fn register_core_shortcuts(app: &AppHandle) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Invalid text hotkey: '{}'", text_str))?;
     // Esc kill-switch is always registered regardless of user config
     let esc_shortcut = Shortcut::new(None, Code::Escape);
+    // Overlay toggle (show/hide the floating panel) — fixed Ctrl+Shift+O
+    let overlay_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
 
     // Unregister any previously registered shortcuts first to avoid conflicts
     let _ = gs.unregister_all();
@@ -117,9 +119,10 @@ pub fn register_core_shortcuts(app: &AppHandle) -> anyhow::Result<()> {
     gs.register(mic_shortcut)?;
     gs.register(text_shortcut)?;
     gs.register(esc_shortcut)?;
+    gs.register(overlay_shortcut)?;
 
     tracing::info!(
-        "Global shortcuts registered: '{}' (mic), '{}' (text), Esc×2 (kill)",
+        "Global shortcuts registered: '{}' (mic), '{}' (text), Ctrl+Shift+O (panel), Esc×2 (kill)",
         mic_str, text_str
     );
     Ok(())
@@ -165,7 +168,8 @@ pub fn get_hotkeys() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "mic":  mic,
         "text": text,
-        "kill": "Esc × 2  (hardcoded)"
+        "kill": "Esc × 2  (hardcoded)",
+        "panel": "Ctrl+Shift+O  (show/hide panel)"
     }))
 }
 
@@ -179,6 +183,26 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
     let mic_shortcut  = parse_hotkey(&mic_str);
     let text_shortcut = parse_hotkey(&text_str);
     let esc_shortcut  = Shortcut::new(None, Code::Escape);
+    let overlay_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
+
+    // ── Overlay panel toggle (Ctrl+Shift+O) ──────────────────────────────────
+    if overlay_shortcut == shortcut {
+        if state == ShortcutState::Pressed {
+            if let Some(ov) = app.get_webview_window("overlay") {
+                let visible = ov.is_visible().unwrap_or(false);
+                if visible {
+                    let _ = ov.hide();
+                } else if crate::agent::planner::is_task_running() || crate::voice::stt::is_recording() {
+                    // Only re-show when there's live activity (never an empty box).
+                    let _ = ov.unminimize();
+                    let _ = ov.show();
+                    let _ = ov.set_always_on_top(true);
+                    let _ = ov.set_focus();
+                }
+            }
+        }
+        return;
+    }
 
     if mic_shortcut.map_or(false, |s| s == shortcut) {
         tracing::info!("Mic hotkey matched (state={:?}), is_recording={}", state, crate::voice::stt::is_recording());

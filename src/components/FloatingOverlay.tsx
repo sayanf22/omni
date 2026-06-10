@@ -8,7 +8,7 @@
  * • Smooth framer-motion transitions
  * • Dynamically resizes the Tauri window to fit content
  */
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -16,7 +16,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic, Loader2, CheckCircle2, AlertCircle, X,
-  ShieldAlert, Square, ChevronDown, ChevronUp,
+  ShieldAlert, Square, ChevronDown, ChevronUp, Minus,
   Zap, Brain, MousePointer2, Keyboard, Eye, FileText, Clipboard
 } from "lucide-react";
 
@@ -51,15 +51,6 @@ const hideWindow = async () => {
 
 const hideTextInput = async () => {
   try { await new WebviewWindow("textinput").hide(); } catch (_) {}
-};
-
-const setWindowHeight = async (h: number) => {
-  try {
-    const inner = await win().innerSize();
-    // Clamp to a sane visible range so the window can never collapse to nothing.
-    const clamped = Math.max(56, Math.min(620, Math.round(h)));
-    await win().setSize({ type: "Logical", width: inner.width || 360, height: clamped } as any);
-  } catch (_) {}
 };
 
 // Tool name → icon mapping
@@ -160,14 +151,13 @@ export const FloatingOverlay: React.FC = () => {
   }, []);
 
   // Sync window height to card content height
-  const syncHeight = useCallback(() => {
-    requestAnimationFrame(() => {
-      const h = cardRef.current?.getBoundingClientRect().height ?? 0;
-      if (h > 0) setWindowHeight(h + 12); // 12px padding for transparency edge
-    });
-  }, []);
-
-  useEffect(() => { syncHeight(); }, [state, steps.length, expanded, permReq, question, heard, syncHeight]);
+  // The overlay window is a FIXED-SIZE panel that the card fills completely, so
+  // there's no fragile per-frame resizing (which used to leave a tall black box).
+  // The one rule we enforce: whenever the panel is idle, HIDE the window so it is
+  // never visible as an empty box.
+  useEffect(() => {
+    if (state === "idle") { hideWindow(); }
+  }, [state]);
 
   // Clear any pending auto-hide
   const clearAutoHide = () => {
@@ -366,14 +356,14 @@ export const FloatingOverlay: React.FC = () => {
   const cfg = stateConfig[state as keyof typeof stateConfig] ?? stateConfig.thinking;
 
   return (
-    <div ref={cardRef} style={{ padding: "6px", boxSizing: "border-box", background: "#0a0a0f", borderRadius: 22 }}>
+    <div ref={cardRef} style={{ height: "100vh", width: "100vw", padding: "6px", boxSizing: "border-box", background: "#0a0a0f", display: "flex", overflow: "hidden" }}>
       <motion.div
-        initial={{ opacity: 0, scale: 0.94, y: -6 }}
+        initial={{ opacity: 0, scale: 0.98, y: -4 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ duration: 0.22, ease: [0.34, 1.2, 0.64, 1] }}
-        style={{ ...glassCard, width: "100%" }}
+        transition={{ duration: 0.2, ease: [0.34, 1.2, 0.64, 1] }}
+        style={{ ...glassCard, width: "100%", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
       >
-        <div style={glassInner}>
+        <div style={{ ...glassInner, display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
 
           {/* ── "Agent is controlling" banner ──────────────────────────────── */}
           {controlling && (
@@ -443,6 +433,20 @@ export const FloatingOverlay: React.FC = () => {
 
             {/* Controls */}
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {/* Hide panel (task keeps running) — re-show with Ctrl+Shift+O */}
+              <button
+                onClick={hideWindow}
+                title="Hide panel (Ctrl+Shift+O to toggle)"
+                style={{
+                  padding: "3px 6px",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: 7, color: "rgba(255,255,255,0.45)",
+                  cursor: "pointer", display: "flex", alignItems: "center",
+                }}
+              >
+                <Minus size={11} />
+              </button>
               {(state === "working" || state === "thinking") && (
                 <button
                   onClick={handleCancel}
@@ -478,6 +482,9 @@ export const FloatingOverlay: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* ── Scrollable activity region (you said + all steps) ──────────── */}
+          <div className="omni-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
 
           {/* ── "You said" transcript bubble — shows what was heard/typed ─────── */}
           <AnimatePresence initial={false}>
@@ -624,6 +631,8 @@ export const FloatingOverlay: React.FC = () => {
               </motion.div>
             )}
           </AnimatePresence>
+
+          </div>{/* ── end scrollable activity region ── */}
 
           {/* ── Approval dialog ─────────────────────────────────────────────── */}
           <AnimatePresence>
@@ -833,6 +842,10 @@ if (typeof document !== "undefined") {
       }
       .animate-spin { animation: omspin 0.8s linear infinite; }
       .omni-wavebar { animation: omwave 1.1s ease-in-out infinite; transform-origin: center; }
+      .omni-scroll::-webkit-scrollbar { width: 6px; }
+      .omni-scroll::-webkit-scrollbar-track { background: transparent; }
+      .omni-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+      .omni-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
     `;
     document.head.appendChild(s);
   }
