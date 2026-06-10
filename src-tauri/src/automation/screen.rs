@@ -86,11 +86,17 @@ pub fn capture_full_screen() -> anyhow::Result<String> {
     let frame_data = state.frame_data.as_ref()
         .ok_or_else(|| anyhow::anyhow!("No frame captured"))?;
 
+    // Build an RGBA image buffer then convert to RGB — JPEG cannot encode an
+    // alpha channel (Rgba8 is unsupported), so we must drop it first.
+    let img_buf = ImageBuffer::<Rgba<u8>, _>::from_raw(state.width, state.height, frame_data.clone())
+        .ok_or_else(|| anyhow::anyhow!("Failed to build image buffer from captured pixels"))?;
+    let rgb = image::DynamicImage::ImageRgba8(img_buf).to_rgb8();
+
     let mut jpeg_bytes = Vec::new();
     {
         let mut cursor = std::io::Cursor::new(&mut jpeg_bytes);
-        let encoder = JpegEncoder::new_with_quality(&mut cursor, 85);
-        encoder.write_image(frame_data, state.width, state.height, ColorType::Rgba8.into())?;
+        let encoder = JpegEncoder::new_with_quality(&mut cursor, 80);
+        encoder.write_image(rgb.as_raw(), rgb.width(), rgb.height(), ColorType::Rgb8.into())?;
     }
 
     Ok(STANDARD.encode(jpeg_bytes))
@@ -139,12 +145,14 @@ pub fn capture_region(x: i32, y: i32, w: u32, h: u32) -> anyhow::Result<String> 
     let rh = h.min(state.height - ry);
 
     let cropped_buf = image::imageops::crop_imm(&img_buf, rx, ry, rw, rh).to_image();
+    // Convert RGBA -> RGB (JPEG has no alpha channel)
+    let rgb = image::DynamicImage::ImageRgba8(cropped_buf).to_rgb8();
 
     let mut jpeg_bytes = Vec::new();
     {
         let mut cursor = std::io::Cursor::new(&mut jpeg_bytes);
-        let encoder = JpegEncoder::new_with_quality(&mut cursor, 85);
-        encoder.write_image(&cropped_buf, rw, rh, ColorType::Rgba8.into())?;
+        let encoder = JpegEncoder::new_with_quality(&mut cursor, 80);
+        encoder.write_image(rgb.as_raw(), rgb.width(), rgb.height(), ColorType::Rgb8.into())?;
     }
 
     Ok(STANDARD.encode(jpeg_bytes))
