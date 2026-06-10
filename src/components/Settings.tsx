@@ -99,9 +99,24 @@ const ModelForm: React.FC<ModelFormProps> = ({
   };
 
   const handleTest = async () => {
-    const keyToUse = apiKey.includes("•") ? "" : apiKey;
-    if (!keyToUse && !isEdit) {
-      setTestMsg("Enter your API key first.");
+    // Resolve the actual key to test with:
+    // - If the user typed a new key (not masked), use it.
+    // - If editing and key is still masked, fetch the real key from the keychain.
+    let keyToUse = apiKey.includes("•") ? "" : apiKey;
+
+    if (!keyToUse && isEdit && editModel) {
+      try {
+        const storedKey = await invoke<string | null>("get_api_key", { name: editModel.id });
+        if (storedKey) keyToUse = storedKey;
+      } catch (e) {
+        console.warn("Could not load stored key:", e);
+      }
+    }
+
+    if (!keyToUse) {
+      setTestMsg(isEdit
+        ? "Could not load saved key — please re-enter your API key."
+        : "Enter your API key first.");
       setTestPassed(false);
       return;
     }
@@ -112,33 +127,29 @@ const ModelForm: React.FC<ModelFormProps> = ({
     setVisionResult(null);
 
     try {
-      const result = await testModelFn(provider, modelName, baseUrl || null, keyToUse || "existing");
+      const result = await testModelFn(provider, modelName, baseUrl || null, keyToUse);
       setTestPassed(true);
       setTestMsg(`Connected ✓ — "${result}"`);
 
-      // Now probe vision
-      if (keyToUse) {
-        setProbingVision(true);
-        setTestMsg("Testing image support…");
-        try {
-          const hasVision = await invoke<boolean>("probe_model_vision", {
-            providerType: provider,
-            modelName,
-            baseUrl: baseUrl || null,
-            apiKey: keyToUse,
-          });
-          setVisionResult(hasVision);
-          setTestMsg(hasVision
-            ? "✓ Text, Code + Screen Vision confirmed"
-            : "✓ Text & Code confirmed — no image/vision support");
-        } catch {
-          setVisionResult(null);
-          setTestMsg("Connected ✓ (vision probe skipped)");
-        } finally {
-          setProbingVision(false);
-        }
-      } else {
-        setTestMsg("Connected ✓");
+      // Probe vision with the same resolved key
+      setProbingVision(true);
+      setTestMsg("Testing image support…");
+      try {
+        const hasVision = await invoke<boolean>("probe_model_vision", {
+          providerType: provider,
+          modelName,
+          baseUrl: baseUrl || null,
+          apiKey: keyToUse,
+        });
+        setVisionResult(hasVision);
+        setTestMsg(hasVision
+          ? "✓ Text, Code + Screen Vision confirmed"
+          : "✓ Text & Code confirmed — no image/vision support");
+      } catch {
+        setVisionResult(null);
+        setTestMsg("Connected ✓ (vision probe skipped)");
+      } finally {
+        setProbingVision(false);
       }
     } catch (e: any) {
       setTestPassed(false);
