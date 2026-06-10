@@ -82,6 +82,9 @@ static RECORDING_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new
 static STOP_FLAG: Mutex<bool> = Mutex::new(false);
 // Whether a capture session is currently active (for hotkey toggle).
 static IS_RECORDING: Mutex<bool> = Mutex::new(false);
+// When true, the next capture is a MIC TEST: its transcript is returned via
+// `voice:test_result` instead of being run as an agent task.
+static TEST_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Is a voice capture session currently active?
 pub fn is_recording() -> bool {
@@ -342,20 +345,33 @@ pub fn start_mic_recording(app: tauri::AppHandle) -> anyhow::Result<()> {
                 return;
             }
 
+            let is_test = TEST_MODE.swap(false, std::sync::atomic::Ordering::SeqCst);
             match process_and_transcribe(captured_samples, cap_rate, cap_channels).await {
                 Ok(text) if !text.trim().is_empty() => {
                     tracing::info!("Voice transcript: '{}'", text.trim());
-                    let _ = app_tx.emit("voice:transcript", serde_json::json!({ "text": text.trim() }));
+                    if is_test {
+                        let _ = app_tx.emit("voice:test_result", serde_json::json!({ "text": text.trim(), "ok": true }));
+                    } else {
+                        let _ = app_tx.emit("voice:transcript", serde_json::json!({ "text": text.trim() }));
+                    }
                 }
                 Ok(_) => {
-                    let _ = app_tx.emit("task:failed", serde_json::json!({
-                        "error": "Could not understand speech — nothing was recognized. Speak clearly and try again, or set up local Whisper / ElevenLabs (see docs/14_voice_setup.md)."
-                    }));
+                    if is_test {
+                        let _ = app_tx.emit("voice:test_result", serde_json::json!({ "text": "", "ok": false, "error": "Nothing was recognized. Speak a bit louder/clearer." }));
+                    } else {
+                        let _ = app_tx.emit("task:failed", serde_json::json!({
+                            "error": "Could not understand speech — nothing was recognized. Speak clearly and try again, or set up local Whisper / ElevenLabs (see docs/14_voice_setup.md)."
+                        }));
+                    }
                 }
                 Err(e) => {
-                    let _ = app_tx.emit("task:failed", serde_json::json!({
-                        "error": format!("Transcription failed: {}", e)
-                    }));
+                    if is_test {
+                        let _ = app_tx.emit("voice:test_result", serde_json::json!({ "text": "", "ok": false, "error": format!("{}", e) }));
+                    } else {
+                        let _ = app_tx.emit("task:failed", serde_json::json!({
+                            "error": format!("Transcription failed: {}", e)
+                        }));
+                    }
                 }
             }
         });
@@ -700,6 +716,17 @@ async fn try_local_whisper(wav_path: &PathBuf) -> Option<String> {
         .to_string();
 
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Tauri command — start a MIC TEST: records (auto-stops on silence), transcribes,
+/// and emits `voice:test_result` with the text. Does NOT run an agent task.
+#[tauri::command]
+pub fn start_voice_test(app: tauri::AppHandle) -> Result<(), String> {
+    TEST_MODE.store(true, std::sync::atomic::Ordering::SeqCst);
+    start_mic_recording(app).map_err(|e| {
+        TEST_MODE.store(false, std::sync::atomic::Ordering::SeqCst);
+        e.to_string()
+    })
 }
 
 /// Tauri command — report which STT engine is active so the UI can inform the user.

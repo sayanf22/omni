@@ -739,6 +739,9 @@ export const Settings: React.FC = () => {
   const [whisperDownloading, setWhisperDownloading] = useState(false);
   const [whisperProgress, setWhisperProgress] = useState<{ stage: string; pct: number } | null>(null);
   const [whisperMsg, setWhisperMsg] = useState<string | null>(null);
+  // Mic test
+  const [voiceTesting, setVoiceTesting] = useState(false);
+  const [voiceTestResult, setVoiceTestResult] = useState<{ ok: boolean; text: string; error?: string } | null>(null);
   const [mem0Key, setMem0Key]   = useState("");
   const [mem0Type, setMem0Type] = useState<"cloud" | "self-hosted">("cloud");
   const [mem0Url, setMem0Url]   = useState("https://api.mem0.ai");
@@ -821,6 +824,29 @@ export const Settings: React.FC = () => {
     } finally {
       setWhisperDownloading(false);
     }
+  };
+
+  // Mic + transcription test — records, transcribes, shows the text.
+  useEffect(() => {
+    let un: (() => void) | null = null;
+    listen<{ ok: boolean; text: string; error?: string }>("voice:test_result", (e) => {
+      setVoiceTestResult(e.payload);
+      setVoiceTesting(false);
+    }).then((fn) => { un = fn; });
+    return () => { if (un) un(); };
+  }, []);
+
+  const handleTestVoice = async () => {
+    setVoiceTestResult(null);
+    setVoiceTesting(true);
+    try {
+      await invoke("start_voice_test");
+    } catch (e: any) {
+      setVoiceTesting(false);
+      setVoiceTestResult({ ok: false, text: "", error: typeof e === "string" ? e : "Could not start microphone." });
+    }
+    // Safety timeout in case no result comes back.
+    setTimeout(() => setVoiceTesting(false), 35000);
   };
 
   const handleSaveMem0 = async () => {
@@ -1119,24 +1145,52 @@ export const Settings: React.FC = () => {
             </button>
           )}
           {whisperMsg && <p className="text-[10px] text-text-muted">{whisperMsg}</p>}
+
+          {/* Test microphone + transcription (any active engine) */}
+          <div className="pt-3 border-t border-border space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleTestVoice}
+                disabled={voiceTesting}
+                className="px-3 py-1.5 bg-surface3 border border-border hover:border-border-light text-text text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {voiceTesting
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-accent" /> Listening… speak now</>
+                  : <><RefreshCw className="w-3.5 h-3.5" /> Test microphone</>}
+              </button>
+              <span className="text-[10px] text-text-muted">Records a few seconds, then shows what was heard.</span>
+            </div>
+            {voiceTestResult && (
+              voiceTestResult.ok ? (
+                <div className="px-3 py-2 rounded-lg bg-success/10 border border-success/25 text-xs">
+                  <span className="text-success font-semibold">✓ Heard: </span>
+                  <span className="text-text">"{voiceTestResult.text}"</span>
+                </div>
+              ) : (
+                <div className="px-3 py-2 rounded-lg bg-error-dim/20 border border-error/25 text-xs text-error">
+                  {voiceTestResult.error || "Couldn't transcribe. Try the offline Whisper download above."}
+                </div>
+              )
+            )}
+          </div>
         </div>
 
         {/* ElevenLabs */}
         <div className="p-4 bg-surface2 border border-border rounded-xl space-y-3">
           <div>
-            <h4 className="text-sm font-semibold text-text">ElevenLabs Voice (STT + TTS)</h4>
-            <p className="text-xs text-text-secondary">Used for speech-to-text (Scribe v2) and natural voice output. Falls back to Windows SAPI if not set.</p>
+            <h4 className="text-sm font-semibold text-text">ElevenLabs Voice (optional, cloud)</h4>
+            <p className="text-xs text-text-secondary">Optional cloud speech-to-text + natural voice output. The key is tested before saving. Local Whisper above is recommended (offline, free).</p>
           </div>
           <div className="flex gap-3">
             <input
               type="password" value={elevenLabsKey}
               onChange={(e) => setElevenLabsKey(e.target.value)}
-              placeholder="el_… ElevenLabs API key"
+              placeholder="ElevenLabs API key"
               className="flex-1 px-3 py-2 bg-surface3 border border-border rounded-lg text-text text-sm focus:outline-none focus:border-accent font-mono"
             />
             <button onClick={handleSaveElevenLabs}
               className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg transition-colors shrink-0">
-              Save
+              Test &amp; Save
             </button>
           </div>
         </div>
