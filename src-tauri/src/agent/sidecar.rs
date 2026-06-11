@@ -49,6 +49,15 @@ pub fn launch_sidecar(app: &AppHandle) {
                         *state.running.lock().unwrap() = true;
                     }
 
+                    // Start wake-word listener in background (non-blocking).
+                    // Small delay to let the sidecar fully initialize all routes.
+                    let wake_app   = app_handle.clone();
+                    let wake_token = token.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        poll_wake_word_sse(wake_app, wake_token).await;
+                    });
+
                     // Run health-check supervisor.
                     supervise_sidecar(&app_handle).await;
 
@@ -199,4 +208,88 @@ fn get_chroma_db_path() -> String {
     path.push("chroma_db");
     let _ = std::fs::create_dir_all(&path);
     path.to_string_lossy().to_string()
+}
+
+/// Poll the sidecar's `/wake` SSE endpoint and emit `wake:detected` Tauri events.
+/// Auto-reconnects if the connection drops (sidecar restart, network hiccup).
+async fn poll_wake_word_sse(app: AppHandle, token: String) {
+    use tauri::Emitter;
+    use futures_util::StreamExt;
+
+    let url = "http://127.0.0.1:8000/wake";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(0)) // no timeout — SSE is long-lived
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => { tracing::error!("[wake] Failed to build client: {e}"); return; }
+    };
+
+    // Retry outer loop — reconnects after drop or error
+    loop {
+        let resp = match client
+            .get(url)
+            .header("X-Sidecar-Token", &token)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("[wake] Cannot connect ({e}), retrying in 10s…");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        tracing::info!("[wake] Connected to wake-word SSE stream");
+        let mut stream = resp.bytes_stream();
+        let mut permanent_stop = false;
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = match chunk {
+                Ok(b) => b,
+                Err(e) => { tracing::warn!("[wake] SSE chunk error: {e}"); break; }
+            };
+
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines() {
+                if !line.starts_with("data: ") { continue; }
+                match line.trim_start_matches("data: ").trim() {
+                    "detected" => {
+                        tracing::info!("[wake] Wake word detected — starting mic recording");
+                        if let Some(overlay) = app.get_webview_window("overlay") {
+                            let _ = overlay.show();
+                            let _ = overlay.set_always_on_top(true);
+                        }
+                        let _ = app.emit("wake:detected", serde_json::json!({}));
+                        crate::agent::planner::live_reset();
+                        crate::agent::planner::live_set_phase("listening", "Hey Omni — say your command…");
+                        let app2 = app.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = crate::voice::stt::start_mic_recording(app2) {
+                                tracing::error!("[wake] start_mic_recording failed: {e}");
+                            }
+                        });
+                    }
+                    "disabled" => {
+                        tracing::info!("[wake] Wake word disabled by server config");
+                        permanent_stop = true; break;
+                    }
+                    "unavailable" | "error" => {
+                        tracing::warn!("[wake] Wake word unavailable in sidecar (openWakeWord/PyAudio missing)");
+                        permanent_stop = true; break;
+                    }
+                    _ => {}
+                }
+            }
+            if permanent_stop { break; }
+        }
+
+        if permanent_stop {
+            tracing::info!("[wake] Shutting down wake-word SSE poller (permanent stop).");
+            break;
+        }
+        tracing::info!("[wake] SSE stream ended — reconnecting in 8s…");
+        tokio::time::sleep(Duration::from_secs(8)).await;
+    }
 }

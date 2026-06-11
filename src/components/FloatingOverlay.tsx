@@ -1,10 +1,12 @@
 /**
- * FloatingOverlay — top-right agent status card
+ * FloatingOverlay — Liquid Glass Agent Card
  *
- * Fully dynamic: the Tauri window resizes to EXACTLY fit the card content
- * every time anything changes. No max-height cap, no truncation.
+ * Design: heavy native Acrylic blur (set by Tauri on the window itself) +
+ * CSS glassmorphism card with distortion shimmer. Fully dynamic — the Tauri
+ * window resizes to EXACTLY fit content via ResizeObserver.
  *
- * Works even when the dashboard is closed — this is a separate Tauri window.
+ * Morphs into an input box when the AI needs a prompt/question answered.
+ * Works even when the dashboard is closed (separate Tauri window).
  */
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -13,31 +15,32 @@ import { getCurrentWindow, LogicalSize, primaryMonitor } from "@tauri-apps/api/w
 import { useStore } from "../store";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Mic, Loader2, CheckCircle2, AlertCircle, X, Square,
-  ShieldAlert, Send, Brain, MousePointer2, Keyboard,
+  Mic, X, Square,
+  Send, Brain, MousePointer2, Keyboard,
   Eye, FileText, Clipboard, Zap, Globe, ChevronDown, ChevronUp,
 } from "lucide-react";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────────
 type Phase = "idle"|"listening"|"thinking"|"working"|"approval"|"question"|"success"|"error"|"text_input";
 interface Step { step_num:number; thought:string; tool:string|null; description:string; success:boolean; ts:number; }
 interface PermReq { id:string; tool:string; action:string; description:string; preview:string|null; }
 
-// ─── Waveform ─────────────────────────────────────────────────────────────────
+// ─── Live Waveform Bars ─────────────────────────────────────────────────────
 const Waveform: React.FC<{ level: number }> = ({ level }) => {
-  const shape = [0.2,0.4,0.65,0.85,1,1,1,0.85,0.65,0.4,0.2];
+  const shape = [0.25, 0.5, 0.7, 0.9, 1, 1, 1, 0.9, 0.7, 0.5, 0.25];
   const lvl = Math.max(0, Math.min(1, level));
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:3.5, height:32 }}>
-      {shape.map((s,i) => {
-        const h = Math.max(3, Math.min(28, 3 + lvl * 25 * s));
+    <div style={{ display:"flex", alignItems:"center", gap:3, height:28 }}>
+      {shape.map((s, i) => {
+        const h = Math.max(3, Math.min(24, 3 + lvl * 21 * s));
         return (
-          <span key={i} className="omni-wavebar" style={{
-            display:"block", width:3.5, height:h, borderRadius:3,
-            background:"linear-gradient(180deg,#c4b5fd,#38bdf8)",
-            transition:"height 65ms cubic-bezier(.4,0,.2,1)",
-            animationDelay:`${i*0.08}s`,
-            animationDuration: lvl > 0.1 ? "0.4s" : "1.2s",
+          <span key={i} style={{
+            display:"block", width:3, height:h, borderRadius:4,
+            background: lvl > 0.1
+              ? "linear-gradient(180deg,rgba(196,181,253,0.95),rgba(56,189,248,0.85))"
+              : "rgba(255,255,255,0.2)",
+            transition: "height 55ms cubic-bezier(.4,0,.2,1), background 200ms ease",
+            flexShrink: 0,
           }}/>
         );
       })}
@@ -45,27 +48,53 @@ const Waveform: React.FC<{ level: number }> = ({ level }) => {
   );
 };
 
-// ─── Tool icon ────────────────────────────────────────────────────────────────
+// ─── Tool Icon ─────────────────────────────────────────────────────────────────
 const TIcon: React.FC<{t:string|null}> = ({t}) => {
   if (!t) return <Zap size={9}/>;
   const s = t.toLowerCase();
-  if (s==="mouse") return <MousePointer2 size={9}/>;
-  if (s==="keyboard") return <Keyboard size={9}/>;
-  if (s==="screen") return <Eye size={9}/>;
-  if (s==="app") return <Brain size={9}/>;
-  if (s==="file") return <FileText size={9}/>;
+  if (s==="mouse")     return <MousePointer2 size={9}/>;
+  if (s==="keyboard")  return <Keyboard size={9}/>;
+  if (s==="screen")    return <Eye size={9}/>;
+  if (s==="app")       return <Brain size={9}/>;
+  if (s==="file")      return <FileText size={9}/>;
   if (s==="clipboard") return <Clipboard size={9}/>;
-  if (s==="web") return <Globe size={9}/>;
+  if (s==="web")       return <Globe size={9}/>;
   return <Zap size={9}/>;
 };
 
 const win = () => getCurrentWindow();
 const hideWin = async () => { try { await win().hide(); } catch(_){} };
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Distortion shimmer overlay (liquid-glass effect) ──────────────────────
+const GlassDistortion: React.FC = () => (
+  <svg width="0" height="0" style={{position:"absolute"}}>
+    <defs>
+      <filter id="liquid-distort" x="-20%" y="-20%" width="140%" height="140%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.65 0.45" numOctaves="3" seed="7" result="noise"/>
+        <feDisplacementMap in="SourceGraphic" in2="noise" scale="6" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </defs>
+  </svg>
+);
+
+// ─── Phase colour map ───────────────────────────────────────────────────────
+const phaseColors = {
+  idle:       { dot:"transparent", glow:"transparent",          ring:"transparent",           label:"" },
+  listening:  { dot:"#c4b5fd",     glow:"rgba(196,181,253,.5)", ring:"rgba(196,181,253,.35)", label:"Listening" },
+  thinking:   { dot:"#818cf8",     glow:"rgba(129,140,248,.5)", ring:"rgba(129,140,248,.35)", label:"Thinking" },
+  working:    { dot:"#38bdf8",     glow:"rgba(56,189,248,.5)",  ring:"rgba(56,189,248,.35)",  label:"Working" },
+  approval:   { dot:"#f87171",     glow:"rgba(248,113,113,.5)", ring:"rgba(248,113,113,.35)", label:"Approval" },
+  question:   { dot:"#38bdf8",     glow:"rgba(56,189,248,.5)",  ring:"rgba(56,189,248,.35)",  label:"Question" },
+  text_input: { dot:"#818cf8",     glow:"rgba(129,140,248,.5)", ring:"rgba(129,140,248,.35)", label:"Command" },
+  success:    { dot:"#34d399",     glow:"rgba(52,211,153,.5)",  ring:"rgba(52,211,153,.35)",  label:"Done" },
+  error:      { dot:"#f87171",     glow:"rgba(248,113,113,.5)", ring:"rgba(248,113,113,.35)", label:"Error" },
+};
+
+// ─── Main ───────────────────────────────────────────────────────────────────
 export const FloatingOverlay: React.FC = () => {
   const { theme } = useStore();
-  const dark = theme !== "light";
+  // theme drives future light-mode support; dark is used for future theming
+  void theme;
 
   const [phase, setPhase]         = useState<Phase>("idle");
   const [header, setHeader]       = useState("");
@@ -80,17 +109,17 @@ export const FloatingOverlay: React.FC = () => {
   const [isDictating, setIsDictating] = useState(false);
   const [screenH, setScreenH]     = useState(900);
 
-  // stale-closure refs
-  const phaseRef   = useRef(phase);
-  const isDictRef  = useRef(isDictating);
+  const phaseRef  = useRef(phase);
+  const isDictRef = useRef(isDictating);
   useEffect(() => { phaseRef.current  = phase; },      [phase]);
   useEffect(() => { isDictRef.current = isDictating; }, [isDictating]);
 
-  const cardRef  = useRef<HTMLDivElement>(null);
+  const cardRef   = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
-  const lastSeq  = useRef(-1);
+  const lastSeq   = useRef(-1);
+  const answerRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── screen height ────────────────────────────────────────────────────────
+  // ── screen height ──────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
@@ -101,14 +130,13 @@ export const FloatingOverlay: React.FC = () => {
     })();
   }, []);
 
-  // ── transparent BG ───────────────────────────────────────────────────────
+  // ── Force transparent window / body ───────────────────────────────────────
   useEffect(() => {
-    document.documentElement.style.background = "transparent";
-    document.body.style.cssText = "background:transparent;margin:0;overflow:hidden;";
+    document.documentElement.style.cssText = "background:transparent!important;";
+    document.body.style.cssText = "background:transparent!important;margin:0;overflow:hidden;";
   }, []);
 
-  // ── DYNAMIC RESIZE ────────────────────────────────────────────────────────
-  // ResizeObserver fires on EVERY DOM change — window tracks content exactly.
+  // ── DYNAMIC RESIZE ─────────────────────────────────────────────────────────
   const doResize = useCallback(() => {
     const card = cardRef.current;
     if (!card || phase === "idle") return;
@@ -121,15 +149,23 @@ export const FloatingOverlay: React.FC = () => {
     if (phase === "idle") { hideWin(); return; }
     const card = cardRef.current;
     if (!card) return;
-    // Fire immediately
     doResize();
     const obs = new ResizeObserver(doResize);
     obs.observe(card);
+    // Also watch every child that might animate in
+    card.querySelectorAll("*").forEach(el => obs.observe(el));
     return () => obs.disconnect();
-  }, [phase, steps, stepsOpen, doResize]);
+  }, [phase, steps, stepsOpen, heard, header, doResize]);
 
-  // ── helpers ──────────────────────────────────────────────────────────────
-  const clearT = () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
+  // Auto-focus answer input when card morphs to question/text_input
+  useEffect(() => {
+    if ((phase === "question" || phase === "text_input") && answerRef.current) {
+      setTimeout(() => answerRef.current?.focus(), 80);
+    }
+  }, [phase]);
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+  const clearT   = () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
   const schedHide = (ms: number) => {
     clearT();
     hideTimer.current = setTimeout(async () => {
@@ -146,7 +182,7 @@ export const FloatingOverlay: React.FC = () => {
     });
   }, []);
 
-  // ── polling fallback ──────────────────────────────────────────────────────
+  // ── Polling fallback ───────────────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -180,7 +216,7 @@ export const FloatingOverlay: React.FC = () => {
     return () => { alive=false; clearInterval(id); };
   }, []);
 
-  // ── event listeners ───────────────────────────────────────────────────────
+  // ── Event listeners ────────────────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
     const subs: Array<()=>void> = [];
@@ -209,18 +245,23 @@ export const FloatingOverlay: React.FC = () => {
       });
 
       await on("hotkey:mic_stop", () => {
-        // Wake word timeout: if we were listening but nothing was transcribed,
-        // go back to idle after a short delay
         if (phaseRef.current==="listening") {
           setPhase("thinking"); setHeader("Transcribing…");
         }
       });
 
-      // Wake word detected but no speech → return to idle
       await on("wake:timeout", async () => {
         if (phaseRef.current==="listening") {
           setPhase("idle"); setHeard(""); await hideWin();
         }
+      });
+
+      // Wake word detected — show overlay in wake state
+      await on("wake:detected", async () => {
+        await show();
+        setPhase("listening");
+        setHeader("Hey Omni — say your command…");
+        setHeard(""); setSteps([]);
       });
 
       await on("voice:transcript", async (e:any) => {
@@ -283,7 +324,7 @@ export const FloatingOverlay: React.FC = () => {
     return () => { alive=false; subs.forEach(u=>u()); clearT(); };
   }, [addStep]);
 
-  // ── escape key ────────────────────────────────────────────────────────────
+  // ── Escape key ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -297,7 +338,7 @@ export const FloatingOverlay: React.FC = () => {
     return () => window.removeEventListener("keydown", onKey);
   }, [phase]);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // ── Action handlers ────────────────────────────────────────────────────────
   const approve = async (ok: boolean) => {
     if (!permReq) return;
     await invoke("approve_request", {id:permReq.id, approved:ok}).catch(()=>{});
@@ -318,358 +359,413 @@ export const FloatingOverlay: React.FC = () => {
     else { setIsDictating(true); try { await invoke("trigger_mic_start"); } catch(_){} }
   };
 
-  if (phase==="idle") return null;
+  if (phase === "idle") return null;
 
-  // ── theme ─────────────────────────────────────────────────────────────────
-  const d = dark;
-  const cardBg   = d ? "rgba(13,13,20,0.88)"      : "rgba(255,255,255,0.94)";
-  const bdr      = d ? "rgba(255,255,255,0.11)"   : "rgba(0,0,0,0.10)";
-  const txt      = d ? "rgba(255,255,255,0.90)"   : "#0f172a";
-  const txtSec   = d ? "rgba(255,255,255,0.48)"   : "#6b7280";
-  const divBdr   = d ? "rgba(255,255,255,0.07)"   : "rgba(0,0,0,0.07)";
-  const rowBg    = d ? "rgba(255,255,255,0.035)"  : "rgba(0,0,0,0.022)";
-  const shadow   = d
-    ? "0 20px 60px rgba(0,0,0,0.65), 0 4px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.10)"
-    : "0 12px 40px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,1)";
+  // ── Design tokens ─────────────────────────────────────────────────────────
+  const pc = phaseColors[phase];
 
-  // phase colors
-  const PC: Record<Phase, {color:string; bg:string; bdr:string; label:string; icon:React.ReactNode}> = {
-    idle:       {color:"#6b7280", bg:"transparent",              bdr:"transparent",            label:"",         icon:null},
-    listening:  {color:"#a78bfa", bg:"rgba(167,139,250,0.14)",  bdr:"rgba(167,139,250,0.30)",  label:"Listening", icon:<Mic size={13}/>},
-    thinking:   {color:"#818cf8", bg:"rgba(129,140,248,0.14)",  bdr:"rgba(129,140,248,0.30)",  label:"Thinking",  icon:<Loader2 size={13} className="animate-spin"/>},
-    working:    {color:"#38bdf8", bg:"rgba(56,189,248,0.14)",   bdr:"rgba(56,189,248,0.30)",   label:"Working",   icon:<Loader2 size={13} className="animate-spin"/>},
-    approval:   {color:"#f87171", bg:"rgba(248,113,113,0.14)",  bdr:"rgba(248,113,113,0.32)",  label:"Approval",  icon:<ShieldAlert size={13}/>},
-    question:   {color:"#38bdf8", bg:"rgba(56,189,248,0.14)",   bdr:"rgba(56,189,248,0.32)",   label:"Question",  icon:<Mic size={13}/>},
-    text_input: {color:"#818cf8", bg:"rgba(129,140,248,0.14)",  bdr:"rgba(129,140,248,0.32)",  label:"Command",   icon:<Brain size={13}/>},
-    success:    {color:"#34d399", bg:"rgba(52,211,153,0.14)",   bdr:"rgba(52,211,153,0.30)",   label:"Done",      icon:<CheckCircle2 size={13}/>},
-    error:      {color:"#f87171", bg:"rgba(248,113,113,0.14)",  bdr:"rgba(248,113,113,0.30)",  label:"Error",     icon:<AlertCircle size={13}/>},
-  };
-  const pc = PC[phase];
+  // Glassmorphism card — dark semi-transparent surface that lets native Acrylic
+  // blur show through. The card itself has NO backdrop-filter (that's the window
+  // layer). Inner shimmer adds the "liquid" depth.
+  const cardBg  = "rgba(8, 8, 14, 0.55)";
+  const cardBdr = "rgba(255,255,255,0.13)";
+  const cardShadow = "0 8px 40px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.12) inset";
 
-  const visSteps = phase==="success"||phase==="error"
-    ? (stepsOpen ? steps : steps.slice(-3))
-    : (stepsOpen ? steps : steps.slice(-5));
+  const txt     = "rgba(255,255,255,0.92)";
+  const txtSec  = "rgba(255,255,255,0.44)";
+  const divBdr  = "rgba(255,255,255,0.07)";
+  const rowBg   = "rgba(255,255,255,0.04)";
+
+  const visSteps = stepsOpen ? steps : steps.slice(-5);
+
+  // Morph to input card if question / text_input
+  const isInputMode = phase === "question" || phase === "text_input";
 
   return (
-    <div style={{width:440, padding:"8px", boxSizing:"border-box", background:"transparent"}}>
-      <motion.div
-        ref={cardRef}
-        initial={{opacity:0, y:-10, scale:0.96}}
-        animate={{opacity:1, y:0, scale:1}}
-        transition={{type:"spring", stiffness:400, damping:30}}
-        style={{
-          background:cardBg,
-          backdropFilter:"blur(48px) saturate(200%)",
-          WebkitBackdropFilter:"blur(48px) saturate(200%)",
-          border:`1px solid ${bdr}`,
-          borderRadius:20,
-          boxShadow:shadow,
-          overflow:"hidden",
-        }}
-      >
+    <>
+      {/* SVG liquid-distortion filter (invisible) */}
+      <GlassDistortion/>
 
-        {/* ── Takeover banner ────────────────────────────────────────── */}
-        <AnimatePresence>
-          {controlling && (
-            <motion.div
-              initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}} exit={{height:0,opacity:0}}
-              style={{
-                display:"flex", alignItems:"center", gap:8, padding:"8px 14px",
-                background:"linear-gradient(90deg,rgba(239,68,68,0.18),rgba(168,85,247,0.10))",
-                borderBottom:`1px solid rgba(239,68,68,0.22)`,
-              }}>
-              <span style={{
-                width:6, height:6, borderRadius:"50%", background:"#f87171",
-                boxShadow:"0 0 8px #f87171", flexShrink:0,
-                animation:"ompulse 1.4s ease-in-out infinite",
-              }}/>
-              <span style={{color:"#fca5a5", fontSize:10.5, fontWeight:700, flex:1}}>Agent controlling your PC</span>
-              <kbd style={{
-                color:txtSec, fontSize:9, fontWeight:600, padding:"2px 7px",
-                borderRadius:5, background:d?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.05)",
-                border:`1px solid ${bdr}`,
-              }}>Esc Esc to stop</kbd>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* Inert CSS keyframes */}
+      <style>{`
+        @keyframes omni-pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+        @keyframes omni-glow  { 0%,100%{box-shadow:0 0 6px currentColor} 50%{box-shadow:0 0 14px currentColor} }
+        @keyframes omni-spin  { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        .omni-spin { animation: omni-spin 1s linear infinite; }
+        .omni-pulse { animation: omni-pulse 1.8s ease-in-out infinite; }
+      `}</style>
 
-        {/* ── Header row ─────────────────────────────────────────────── */}
-        <div style={{
-          display:"flex", alignItems:"center", gap:10,
-          padding:"13px 14px 11px",
-          borderBottom: (steps.length > 0 || heard) ? `1px solid ${divBdr}` : "none",
-        }}>
+      {/* Outer wrapper — transparent, sets window width */}
+      <div style={{ width:440, padding:"8px", boxSizing:"border-box", background:"transparent" }}>
 
-          {/* Status pill */}
+        <motion.div
+          ref={cardRef}
+          key={isInputMode ? "input" : "status"}
+          initial={{ opacity:0, y:-8, scale:0.97 }}
+          animate={{ opacity:1, y:0, scale:1 }}
+          exit={{ opacity:0, y:-6, scale:0.96 }}
+          transition={{ type:"spring", stiffness:500, damping:36 }}
+          style={{
+            position:"relative",
+            background: cardBg,
+            border: `1px solid ${cardBdr}`,
+            borderRadius: 20,
+            boxShadow: cardShadow,
+            overflow: "hidden",
+            // The actual blur is applied at the NATIVE WINDOW level (Acrylic).
+            // This div just provides the dark tinted overlay to make text legible.
+          }}
+        >
+          {/* ── Liquid shimmer layer ─────────────────────────────────── */}
           <div style={{
-            display:"flex", alignItems:"center", gap:6,
-            padding:"4px 11px 4px 8px",
-            background:pc.bg, border:`1px solid ${pc.bdr}`,
-            borderRadius:99, flexShrink:0,
-          }}>
-            <span style={{color:pc.color, display:"flex", alignItems:"center"}}>{pc.icon}</span>
-            <span style={{color:pc.color, fontSize:11, fontWeight:800, letterSpacing:"0.05em"}}>{pc.label}</span>
-          </div>
+            position:"absolute", inset:0, pointerEvents:"none", zIndex:0,
+            background: `radial-gradient(ellipse 80% 50% at 50% -10%, rgba(${
+              phase==="listening" ? "196,181,253" :
+              phase==="success"   ? "52,211,153"  :
+              phase==="error"     ? "248,113,113" :
+              phase==="working"   ? "56,189,248"  :
+                                   "129,140,248"
+            },.12) 0%, transparent 70%)`,
+            filter: "url(#liquid-distort)",
+            borderRadius: 20,
+          }}/>
 
-          {/* Waveform OR header text */}
-          <div style={{flex:1, minWidth:0, overflow:"hidden"}}>
-            {phase==="listening" ? (
-              <Waveform level={audioLvl}/>
-            ) : (
-              <motion.p
-                key={header}
-                initial={{opacity:0, x:4}} animate={{opacity:1, x:0}} transition={{duration:0.13}}
-                style={{
-                  color:txt, fontSize:13, fontWeight:600, lineHeight:1.4,
-                  margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-                }}
-              >{header}</motion.p>
-            )}
-          </div>
+          {/* ── Coloured top accent line ─────────────────────────────── */}
+          <div style={{
+            position:"absolute", top:0, left:0, right:0, height:2,
+            background: `linear-gradient(90deg, transparent 0%, ${pc.dot} 40%, ${pc.dot} 60%, transparent 100%)`,
+            opacity: (phase as string)==="idle" ? 0 : 0.8,
+            borderRadius:"20px 20px 0 0",
+            transition:"background 0.4s ease",
+            zIndex:1,
+          }}/>
 
-          {/* Action buttons */}
-          <div style={{display:"flex", gap:5, flexShrink:0}}>
-            {/* Hide */}
-            <button
-              onClick={hideWin}
-              title="Hide (Ctrl+Shift+O to re-show)"
-              style={{
-                padding:"5px 8px", borderRadius:9,
-                background:d?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.04)",
-                border:`1px solid ${bdr}`, color:txtSec, cursor:"pointer",
-                display:"flex", alignItems:"center", fontSize:11,
-              }}>—</button>
+          {/* ────────────────────── Content (above shimmer) ────────── */}
+          <div style={{ position:"relative", zIndex:2 }}>
 
-            {/* Stop (while working) */}
-            {(phase==="working"||phase==="thinking") && (
-              <button
-                onClick={async()=>{ await invoke("cancel_task").catch(()=>{}); setPhase("idle"); setSteps([]); await hideWin(); }}
-                style={{
-                  display:"flex", alignItems:"center", gap:4, padding:"5px 10px",
-                  background:"rgba(248,113,113,0.14)", border:"1px solid rgba(248,113,113,0.30)",
-                  borderRadius:9, color:"#f87171", fontSize:11.5, fontWeight:800, cursor:"pointer",
-                }}>
-                <Square size={9} fill="#f87171"/> Stop
-              </button>
-            )}
-
-            {/* Dismiss (success/error) */}
-            {(phase==="success"||phase==="error") && (
-              <button
-                onClick={async()=>{ setPhase("idle"); setSteps([]); await hideWin(); }}
-                style={{
-                  padding:"5px 8px", borderRadius:9,
-                  background:d?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.04)",
-                  border:`1px solid ${bdr}`, color:txtSec, cursor:"pointer",
-                  display:"flex", alignItems:"center",
-                }}>
-                <X size={11}/>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* ── "You said" bubble ──────────────────────────────────────── */}
-        <AnimatePresence initial={false}>
-          {heard && (phase==="thinking"||phase==="working"||phase==="success"||phase==="error"||phase==="question"||phase==="approval") && (
-            <motion.div
-              initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
-              exit={{height:0,opacity:0}} transition={{duration:0.15}}>
-              <div style={{padding:"10px 14px 8px"}}>
-                <div style={{
-                  display:"flex", alignItems:"flex-start", gap:9, padding:"10px 13px",
-                  background:d?"linear-gradient(135deg,rgba(56,189,248,0.09),rgba(129,140,248,0.05))"
-                              :"linear-gradient(135deg,rgba(56,189,248,0.10),rgba(129,140,248,0.06))",
-                  border:d?"1px solid rgba(56,189,248,0.18)":"1px solid rgba(56,189,248,0.25)",
-                  borderRadius:13,
-                }}>
-                  <Mic size={12} style={{color:"#38bdf8", flexShrink:0, marginTop:3}}/>
-                  <div style={{flex:1, minWidth:0}}>
-                    <p style={{color:"rgba(56,189,248,0.65)", fontSize:9, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.08em", margin:"0 0 3px"}}>You said</p>
-                    <p style={{color:txt, fontSize:13.5, fontWeight:500, lineHeight:1.48, margin:0, wordBreak:"break-word"}}>{heard}</p>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Step history ───────────────────────────────────────────── */}
-        <AnimatePresence initial={false}>
-          {steps.length > 0 && (
-            <motion.div
-              initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
-              exit={{height:0,opacity:0}} transition={{duration:0.17}}>
-              <div style={{borderTop:`1px solid ${divBdr}`, padding:"7px 12px 9px"}}>
-
-                {/* toggle */}
-                <button
-                  onClick={()=>setStepsOpen(v=>!v)}
+            {/* ── Takeover banner ──────────────────────────────────── */}
+            <AnimatePresence>
+              {controlling && (
+                <motion.div
+                  initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}} exit={{height:0,opacity:0}}
                   style={{
-                    width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-                    padding:"3px 2px 5px", background:"transparent", border:"none",
-                    color:txtSec, fontSize:10, fontWeight:700, cursor:"pointer",
-                    textTransform:"uppercase", letterSpacing:"0.05em",
+                    display:"flex", alignItems:"center", gap:8, padding:"7px 14px",
+                    background:"linear-gradient(90deg,rgba(239,68,68,0.20),rgba(168,85,247,0.10))",
+                    borderBottom:"1px solid rgba(239,68,68,0.22)",
                   }}>
-                  <span>Steps ({steps.length})</span>
-                  {stepsOpen ? <ChevronUp size={10}/> : <ChevronDown size={10}/>}
-                </button>
+                  <span className="omni-pulse" style={{
+                    width:6, height:6, borderRadius:"50%", background:"#f87171",
+                    boxShadow:"0 0 8px #f87171", flexShrink:0,
+                  }}/>
+                  <span style={{color:"#fca5a5", fontSize:10.5, fontWeight:700, flex:1}}>Agent controlling your PC</span>
+                  <kbd style={{
+                    color:txtSec, fontSize:9, fontWeight:600, padding:"2px 7px", borderRadius:5,
+                    background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.10)",
+                  }}>Esc Esc</kbd>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-                <AnimatePresence initial={false}>
-                  {stepsOpen && (
-                    <motion.div
-                      initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
-                      exit={{height:0,opacity:0}} transition={{duration:0.14}}>
-                      <div style={{display:"flex", flexDirection:"column", gap:4, paddingTop:2}}>
-                        {visSteps.map((s,i) => (
-                          <motion.div
-                            key={`${s.step_num}-${s.ts}`}
-                            initial={{opacity:0,x:4}} animate={{opacity:1,x:0}}
-                            transition={{duration:0.11, delay:i*0.012}}
-                            style={{
-                              display:"flex", alignItems:"flex-start", gap:8, padding:"7px 9px",
-                              background: s.success ? rowBg : (d?"rgba(248,113,113,0.07)":"rgba(239,68,68,0.06)"),
-                              border: s.success ? `1px solid ${divBdr}` : "1px solid rgba(248,113,113,0.22)",
-                              borderRadius:11,
-                            }}>
-                            {/* number badge */}
-                            <span style={{
-                              flexShrink:0, width:17, height:17, borderRadius:"50%",
-                              background: s.success?"rgba(56,189,248,0.12)":"rgba(248,113,113,0.12)",
-                              border: s.success?"1px solid rgba(56,189,248,0.28)":"1px solid rgba(248,113,113,0.28)",
-                              display:"flex", alignItems:"center", justifyContent:"center",
-                              fontSize:9, fontWeight:900,
-                              color: s.success?"#38bdf8":"#f87171",
-                            }}>{s.step_num}</span>
+            {/* ── Header row ───────────────────────────────────────── */}
+            <div style={{
+              display:"flex", alignItems:"center", gap:10,
+              padding:"13px 14px 11px",
+              borderBottom: (steps.length > 0 || heard || isInputMode) ? `1px solid ${divBdr}` : "none",
+            }}>
+              {/* Status pill */}
+              <motion.div
+                layout
+                style={{
+                  display:"flex", alignItems:"center", gap:6,
+                  padding:"4px 11px 4px 8px",
+                  background: `${pc.ring}44`,
+                  border: `1px solid ${pc.ring}`,
+                  borderRadius:99, flexShrink:0,
+                }}>
+                {/* Pulsing dot */}
+                <span className={phase!=="success"&&phase!=="error" ? "omni-pulse" : ""} style={{
+                  width:7, height:7, borderRadius:"50%",
+                  background: pc.dot,
+                  boxShadow: `0 0 6px ${pc.glow}`,
+                  flexShrink:0,
+                }}/>
+                <span style={{ color:pc.dot, fontSize:10.5, fontWeight:800, letterSpacing:"0.06em" }}>
+                  {pc.label}
+                </span>
+              </motion.div>
 
-                            {/* content */}
-                            <div style={{flex:1, minWidth:0}}>
-                              {s.thought && (
-                                <p style={{
-                                  color:txt, fontSize:12, fontWeight:600, margin:"0 0 2px",
-                                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-                                }}>{s.thought}</p>
-                              )}
-                              {s.description && s.description!==s.thought && (
-                                <p style={{
-                                  color:s.success?txtSec:"#f87171",
-                                  fontSize:10.5, lineHeight:1.4, margin:0,
-                                  display:"-webkit-box", WebkitLineClamp:3, WebkitBoxOrient:"vertical",
-                                  overflow:"hidden",
-                                }}>{s.description}</p>
-                              )}
-                            </div>
-
-                            {/* tool badge */}
-                            {s.tool && (
-                              <span style={{
-                                flexShrink:0, display:"flex", alignItems:"center", gap:2.5,
-                                padding:"2px 5px",
-                                background:d?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)",
-                                border:`1px solid ${divBdr}`, borderRadius:6,
-                                color:txtSec, fontSize:8.5, fontWeight:700, textTransform:"uppercase",
-                              }}>
-                                <TIcon t={s.tool}/>{s.tool}
-                              </span>
-                            )}
-                          </motion.div>
-                        ))}
-
-                        {/* show-more hint */}
-                        {!stepsOpen && steps.length > visSteps.length && (
-                          <button onClick={()=>setStepsOpen(true)}
-                            style={{background:"transparent",border:"none",color:txtSec,
-                              fontSize:10,fontWeight:700,cursor:"pointer",padding:"2px 0",textAlign:"left"}}>
-                            + {steps.length-visSteps.length} more…
-                          </button>
-                        )}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Approval ───────────────────────────────────────────────── */}
-        <AnimatePresence>
-          {phase==="approval" && permReq && (
-            <motion.div
-              initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
-              exit={{height:0,opacity:0}} transition={{duration:0.15}}>
-              <div style={{padding:"12px 14px 14px", borderTop:`1px solid rgba(248,113,113,0.18)`}}>
-                <p style={{color:"#f87171",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"0.08em",margin:"0 0 7px"}}>Permission Required</p>
-                <p style={{color:txt,fontSize:13,lineHeight:1.5,margin:"0 0 12px"}}>{permReq.description}</p>
-                <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>approve(false)}
-                    style={{flex:1,padding:"9px",background:d?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.04)",
-                      border:`1px solid ${bdr}`,borderRadius:11,color:txtSec,fontSize:12,fontWeight:700,cursor:"pointer"}}>
-                    Deny
-                  </button>
-                  <button onClick={()=>approve(true)}
-                    style={{flex:1,padding:"9px",background:"rgba(52,211,153,0.15)",
-                      border:"1px solid rgba(52,211,153,0.30)",borderRadius:11,color:"#34d399",fontSize:12,fontWeight:800,cursor:"pointer"}}>
-                    Approve
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Question / text input ──────────────────────────────────── */}
-        <AnimatePresence>
-          {(phase==="question"||phase==="text_input") && (
-            <motion.div
-              initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
-              exit={{height:0,opacity:0}} transition={{duration:0.15}}>
-              <div style={{padding:"10px 12px 12px", borderTop:`1px solid ${divBdr}`}}>
-                {phase==="question" && question && (
-                  <p style={{color:txt,fontSize:13,lineHeight:1.5,margin:"0 0 9px"}}>{question.question}</p>
-                )}
-                <div style={{display:"flex",gap:6,alignItems:"flex-end"}}>
-                  <textarea
-                    value={answer}
-                    onChange={e=>setAnswer(e.target.value)}
-                    onKeyDown={e=>{ if (e.key==="Enter"&&!e.shiftKey) { e.preventDefault(); phase==="question"?submitAnswer():sendPrompt(); } }}
-                    placeholder={phase==="question"?"Type your answer…":"Type a command…"}
-                    rows={1}
-                    autoFocus
+              {/* Waveform or header text */}
+              <div style={{ flex:1, minWidth:0, overflow:"hidden" }}>
+                {phase==="listening" ? (
+                  <Waveform level={audioLvl}/>
+                ) : (
+                  <motion.p
+                    key={header}
+                    initial={{opacity:0, x:5}} animate={{opacity:1, x:0}} transition={{duration:0.13}}
                     style={{
-                      flex:1, padding:"9px 12px", resize:"none",
-                      background:d?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.04)",
-                      border:`1px solid ${bdr}`, borderRadius:11,
-                      color:txt, fontSize:13, lineHeight:1.4, outline:"none",
-                      fontFamily:"inherit", maxHeight:120, overflowY:"auto",
+                      color:txt, fontSize:13, fontWeight:600, lineHeight:1.4,
+                      margin:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
                     }}
-                  />
-                  <button onClick={toggleMic}
-                    style={{
-                      padding:"9px 10px", flexShrink:0,
-                      background:isDictating?"rgba(167,139,250,0.18)":d?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.04)",
-                      border:isDictating?"1px solid rgba(167,139,250,0.35)":`1px solid ${bdr}`,
-                      borderRadius:11, color:isDictating?"#a78bfa":txtSec, cursor:"pointer",
-                      display:"flex", alignItems:"center",
-                    }}>
-                    <Mic size={13}/>
-                  </button>
-                  <button onClick={phase==="question"?submitAnswer:sendPrompt}
-                    style={{
-                      padding:"9px 11px", flexShrink:0,
-                      background:"rgba(129,140,248,0.18)", border:"1px solid rgba(129,140,248,0.30)",
-                      borderRadius:11, color:"#818cf8", cursor:"pointer",
-                      display:"flex", alignItems:"center",
-                    }}>
-                    <Send size={13}/>
-                  </button>
-                </div>
+                  >{header}</motion.p>
+                )}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-      </motion.div>
-    </div>
+              {/* Buttons */}
+              <div style={{ display:"flex", gap:5, flexShrink:0 }}>
+                <button
+                  onClick={hideWin}
+                  title="Hide (Ctrl+Shift+O to re-show)"
+                  style={{
+                    padding:"5px 8px", borderRadius:9,
+                    background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.09)",
+                    color:txtSec, cursor:"pointer", display:"flex", alignItems:"center", fontSize:12,
+                  }}>—</button>
+
+                {(phase==="working"||phase==="thinking") && (
+                  <button
+                    onClick={async()=>{ await invoke("cancel_task").catch(()=>{}); setPhase("idle"); setSteps([]); await hideWin(); }}
+                    style={{
+                      display:"flex", alignItems:"center", gap:4, padding:"5px 10px",
+                      background:"rgba(248,113,113,0.14)", border:"1px solid rgba(248,113,113,0.30)",
+                      borderRadius:9, color:"#f87171", fontSize:11.5, fontWeight:800, cursor:"pointer",
+                    }}>
+                    <Square size={9} fill="#f87171"/> Stop
+                  </button>
+                )}
+
+                {(phase==="success"||phase==="error") && (
+                  <button
+                    onClick={async()=>{ setPhase("idle"); setSteps([]); await hideWin(); }}
+                    style={{
+                      padding:"5px 8px", borderRadius:9,
+                      background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.09)",
+                      color:txtSec, cursor:"pointer", display:"flex", alignItems:"center",
+                    }}>
+                    <X size={11}/>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* ── "You said" bubble ─────────────────────────────────── */}
+            <AnimatePresence initial={false}>
+              {heard && !isInputMode && (
+                <motion.div
+                  initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
+                  exit={{height:0,opacity:0}} transition={{duration:0.15}}>
+                  <div style={{padding:"9px 14px 8px"}}>
+                    <div style={{
+                      display:"flex", alignItems:"flex-start", gap:9, padding:"10px 13px",
+                      background:"linear-gradient(135deg,rgba(56,189,248,0.10),rgba(129,140,248,0.07))",
+                      border:"1px solid rgba(56,189,248,0.22)", borderRadius:13,
+                    }}>
+                      <Mic size={12} style={{color:"#38bdf8", flexShrink:0, marginTop:3}}/>
+                      <div style={{flex:1, minWidth:0}}>
+                        <p style={{color:"rgba(56,189,248,0.6)", fontSize:9, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.08em", margin:"0 0 3px"}}>You said</p>
+                        <p style={{color:txt, fontSize:13, fontWeight:500, lineHeight:1.5, margin:0, wordBreak:"break-word"}}>{heard}</p>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* ── Step history ──────────────────────────────────────── */}
+            <AnimatePresence initial={false}>
+              {steps.length > 0 && !isInputMode && (
+                <motion.div
+                  initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
+                  exit={{height:0,opacity:0}} transition={{duration:0.17}}>
+                  <div style={{borderTop:`1px solid ${divBdr}`, padding:"7px 12px 9px"}}>
+
+                    <button
+                      onClick={()=>setStepsOpen(v=>!v)}
+                      style={{
+                        width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+                        padding:"3px 2px 5px", background:"transparent", border:"none",
+                        color:txtSec, fontSize:10, fontWeight:700, cursor:"pointer",
+                        textTransform:"uppercase", letterSpacing:"0.05em",
+                      }}>
+                      <span>Steps ({steps.length})</span>
+                      {stepsOpen ? <ChevronUp size={10}/> : <ChevronDown size={10}/>}
+                    </button>
+
+                    <AnimatePresence initial={false}>
+                      {stepsOpen && (
+                        <motion.div
+                          initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
+                          exit={{height:0,opacity:0}} transition={{duration:0.14}}>
+                          <div style={{display:"flex", flexDirection:"column", gap:4, paddingTop:2}}>
+                            {visSteps.map((s, i) => (
+                              <motion.div
+                                key={`${s.step_num}-${s.ts}`}
+                                initial={{opacity:0, x:5}} animate={{opacity:1, x:0}}
+                                transition={{duration:0.11, delay:i*0.014}}
+                                style={{
+                                  display:"flex", alignItems:"flex-start", gap:8, padding:"7px 9px",
+                                  background: s.success ? rowBg : "rgba(248,113,113,0.08)",
+                                  border: s.success ? `1px solid ${divBdr}` : "1px solid rgba(248,113,113,0.22)",
+                                  borderRadius:11,
+                                }}>
+                                <span style={{
+                                  flexShrink:0, width:17, height:17, borderRadius:"50%",
+                                  background: s.success?"rgba(56,189,248,0.12)":"rgba(248,113,113,0.12)",
+                                  border: s.success?"1px solid rgba(56,189,248,0.28)":"1px solid rgba(248,113,113,0.28)",
+                                  display:"flex", alignItems:"center", justifyContent:"center",
+                                  fontSize:9, fontWeight:900,
+                                  color: s.success?"#38bdf8":"#f87171",
+                                }}>{s.step_num}</span>
+
+                                <div style={{flex:1, minWidth:0}}>
+                                  {s.thought && (
+                                    <p style={{
+                                      color:txt, fontSize:12, fontWeight:600, margin:"0 0 2px",
+                                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                                    }}>{s.thought}</p>
+                                  )}
+                                  {s.description && s.description!==s.thought && (
+                                    <p style={{
+                                      color: s.success ? txtSec : "#f87171",
+                                      fontSize:10.5, lineHeight:1.4, margin:0,
+                                      display:"-webkit-box", WebkitLineClamp:3, WebkitBoxOrient:"vertical",
+                                      overflow:"hidden",
+                                    }}>{s.description}</p>
+                                  )}
+                                </div>
+
+                                {s.tool && (
+                                  <span style={{
+                                    flexShrink:0, display:"flex", alignItems:"center", gap:2.5,
+                                    padding:"2px 5px",
+                                    background:"rgba(255,255,255,0.05)", border:`1px solid ${divBdr}`,
+                                    borderRadius:6, color:txtSec, fontSize:8, fontWeight:700, textTransform:"uppercase",
+                                  }}>
+                                    <TIcon t={s.tool}/>{s.tool}
+                                  </span>
+                                )}
+                              </motion.div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* ── Approval ──────────────────────────────────────────── */}
+            <AnimatePresence>
+              {phase==="approval" && permReq && (
+                <motion.div
+                  initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}}
+                  exit={{height:0,opacity:0}} transition={{duration:0.15}}>
+                  <div style={{padding:"12px 14px 14px", borderTop:"1px solid rgba(248,113,113,0.20)"}}>
+                    <p style={{color:"#f87171", fontSize:10, fontWeight:800, textTransform:"uppercase", letterSpacing:"0.08em", margin:"0 0 7px"}}>Permission Required</p>
+                    <p style={{color:txt, fontSize:13, lineHeight:1.5, margin:"0 0 12px"}}>{permReq.description}</p>
+                    <div style={{display:"flex", gap:8}}>
+                      <button onClick={()=>approve(false)} style={{
+                        flex:1, padding:"9px",
+                        background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.09)",
+                        borderRadius:11, color:txtSec, fontSize:12, fontWeight:700, cursor:"pointer",
+                      }}>Deny</button>
+                      <button onClick={()=>approve(true)} style={{
+                        flex:1, padding:"9px",
+                        background:"rgba(52,211,153,0.15)", border:"1px solid rgba(52,211,153,0.30)",
+                        borderRadius:11, color:"#34d399", fontSize:12, fontWeight:800, cursor:"pointer",
+                      }}>Approve</button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* ── MORPHED INPUT — question OR text_input ────────────── */}
+            <AnimatePresence>
+              {isInputMode && (
+                <motion.div
+                  initial={{opacity:0, y:6}} animate={{opacity:1, y:0}}
+                  exit={{opacity:0, y:4}} transition={{duration:0.18}}>
+                  <div style={{padding:"10px 14px 14px"}}>
+
+                    {/* Question text (if AI asked something) */}
+                    {phase==="question" && question && (
+                      <motion.div
+                        initial={{opacity:0}} animate={{opacity:1}} transition={{delay:0.05}}
+                        style={{
+                          padding:"10px 13px", marginBottom:10,
+                          background:"linear-gradient(135deg,rgba(56,189,248,0.10),rgba(129,140,248,0.07))",
+                          border:"1px solid rgba(56,189,248,0.22)", borderRadius:13,
+                        }}>
+                        <p style={{color:"rgba(56,189,248,0.65)", fontSize:9, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.08em", margin:"0 0 4px"}}>
+                          Omni asks
+                        </p>
+                        <p style={{color:txt, fontSize:13, lineHeight:1.5, margin:0}}>{question.question}</p>
+                      </motion.div>
+                    )}
+
+                    {/* Hint for text_input mode */}
+                    {phase==="text_input" && (
+                      <p style={{color:txtSec, fontSize:10.5, margin:"0 0 8px", fontWeight:500}}>
+                        Type a command or use mic
+                      </p>
+                    )}
+
+                    {/* Glass input box */}
+                    <div style={{
+                      display:"flex", gap:6, alignItems:"flex-end",
+                      padding:"8px 10px",
+                      background:"rgba(255,255,255,0.06)",
+                      border:"1px solid rgba(255,255,255,0.13)",
+                      borderRadius:14,
+                      backdropFilter:"blur(6px)",
+                    }}>
+                      <textarea
+                        ref={answerRef}
+                        value={answer}
+                        onChange={e=>setAnswer(e.target.value)}
+                        onKeyDown={e=>{ if (e.key==="Enter"&&!e.shiftKey) { e.preventDefault(); phase==="question"?submitAnswer():sendPrompt(); } }}
+                        placeholder={phase==="question"?"Your answer…":"Type a command…"}
+                        rows={1}
+                        style={{
+                          flex:1, resize:"none",
+                          background:"transparent", border:"none", outline:"none",
+                          color:txt, fontSize:13.5, lineHeight:1.5,
+                          fontFamily:"inherit",
+                          maxHeight:120, overflowY:"auto",
+                          padding:0,
+                        }}
+                      />
+                      <button onClick={toggleMic} style={{
+                        padding:"7px 9px", flexShrink:0, borderRadius:10,
+                        background: isDictating ? "rgba(196,181,253,0.20)" : "rgba(255,255,255,0.07)",
+                        border: isDictating ? "1px solid rgba(196,181,253,0.40)" : "1px solid rgba(255,255,255,0.10)",
+                        color: isDictating ? "#c4b5fd" : txtSec, cursor:"pointer",
+                        display:"flex", alignItems:"center",
+                      }}>
+                        {isDictating ? <Waveform level={audioLvl}/> : <Mic size={14}/>}
+                      </button>
+                      <button onClick={phase==="question"?submitAnswer:sendPrompt} style={{
+                        padding:"7px 10px", flexShrink:0, borderRadius:10,
+                        background:"rgba(129,140,248,0.20)", border:"1px solid rgba(129,140,248,0.35)",
+                        color:"#818cf8", cursor:"pointer", display:"flex", alignItems:"center",
+                      }}>
+                        <Send size={14}/>
+                      </button>
+                    </div>
+                    <p style={{color:txtSec, fontSize:9.5, marginTop:5, textAlign:"center", fontWeight:500}}>
+                      Enter to send · Esc to cancel
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* ── Bottom padding ─────────────────────────────────────── */}
+            {!isInputMode && <div style={{height:4}}/>}
+          </div>
+        </motion.div>
+      </div>
+    </>
   );
 };
