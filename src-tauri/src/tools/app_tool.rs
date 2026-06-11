@@ -111,12 +111,25 @@ impl Tool for AppTool {
                 } else {
                     format!("https://{}", url)
                 };
-                let status = std::process::Command::new("cmd")
-                    .args(["/c", "start", "", &final_url])
-                    .status()
-                    .map_err(|e| anyhow::anyhow!("Failed to open URL: {}", e))?;
-                if !status.success() {
-                    return Err(anyhow::anyhow!("cmd /c start failed for URL: {}", final_url));
+                // Use ShellExecuteW to open the URL in the default browser — no cmd.exe,
+                // no terminal flash. This is what clicking a link in Windows does.
+                use windows::core::HSTRING;
+                use windows::Win32::UI::Shell::ShellExecuteW;
+                use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+                use windows::Win32::Foundation::HWND;
+                let url_w = HSTRING::from(final_url.as_str());
+                let result = unsafe {
+                    ShellExecuteW(
+                        HWND::default(),
+                        &HSTRING::from("open"),
+                        &url_w,
+                        None,
+                        None,
+                        SW_SHOWNORMAL,
+                    )
+                };
+                if (result.0 as isize) <= 32 {
+                    return Err(anyhow::anyhow!("Failed to open URL in browser: {}", final_url));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                 Ok(format!(
@@ -140,8 +153,10 @@ impl Tool for AppTool {
                 let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'name' for close action"))?;
                 let mut exe_name = name.to_string();
                 if !exe_name.ends_with(".exe") { exe_name.push_str(".exe"); }
+                use std::os::windows::process::CommandExt;
                 let output = std::process::Command::new("taskkill")
                     .args(&["/F", "/IM", &exe_name])
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                     .output()?;
                 if output.status.success() {
                     Ok(format!("Closed '{}'", exe_name))

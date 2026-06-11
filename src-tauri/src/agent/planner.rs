@@ -794,8 +794,16 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
     // ── System awareness: inject the current desktop state ──────────────────
     // Tells the agent what windows are already open so it can focus instead of
-    // re-launching, and reason strategically about the user's actual system.
-    let sys_context = crate::automation::process::get_system_context();
+    // re-launching. Run in a background task with a timeout so a slow PowerShell
+    // Get-StartApps call never blocks the agent from starting.
+    let sys_context = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::task::spawn_blocking(crate::automation::process::get_system_context),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or_else(|| "System context loading…".to_string());
     system_prompt.push_str(&format!("\n\n== CURRENT SYSTEM STATE ==\n{}\n", sys_context));
 
     // ── Active Project Workspace: restrict agent to this directory ──────────

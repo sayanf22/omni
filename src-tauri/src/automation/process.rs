@@ -8,6 +8,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 use windows::Win32::Foundation::{HWND, LPARAM, BOOL};
 
+/// Windows process creation flag: suppress the console window for background commands.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Extension trait to add CREATE_NO_WINDOW silently to any Command.
+trait CommandNoWindow {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl CommandNoWindow for std::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInfo {
     pub name: String,
@@ -267,6 +281,7 @@ fn find_uwp_aumid(name_lower: &str) -> Option<String> {
 
     let output = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .no_window()
         .output()
         .ok()?;
 
@@ -383,6 +398,7 @@ fn is_uwp_installed(aumid: &str) -> bool {
     );
     let result = match std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .no_window()
         .output()
     {
         Ok(out) => {
@@ -420,8 +436,6 @@ fn launch_uwp(aumid: &str) -> anyhow::Result<u32> {
         .map_err(|e| anyhow::anyhow!("Failed to launch UWP app '{}': {}", aumid, e))?;
     Ok(child.id())
 }
-
-// ── Public API ────────────────────────────────────────────────────────────────
 
 /// Find the best-matching Start Menu .lnk shortcut path for an app name.
 /// Launching the shortcut is the most reliable universal method — Windows
@@ -465,13 +479,31 @@ fn find_start_menu_shortcut(name_lower: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Launch an app by opening its Start Menu shortcut via ShellExecute.
+/// Launch an app by opening its Start Menu shortcut via ShellExecuteW.
+/// Uses the Win32 API directly — no cmd.exe, no terminal flash.
 fn launch_shortcut(lnk: &std::path::Path) -> anyhow::Result<u32> {
-    let child = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &lnk.to_string_lossy()])
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to launch shortcut {:?}: {}", lnk, e))?;
-    Ok(child.id())
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::Win32::Foundation::HWND;
+
+    let path_w = HSTRING::from(lnk.to_string_lossy().as_ref());
+    let result = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            &HSTRING::from("open"),
+            &path_w,
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as isize;
+    if code > 32 {
+        Ok(0) // ShellExecuteW doesn't return a PID
+    } else {
+        Err(anyhow::anyhow!("ShellExecuteW failed with code {} for {:?}", code, lnk))
+    }
 }
 
 /// Full Start-menu app index: (DisplayName, AppID) for EVERY installed app —
@@ -493,6 +525,7 @@ fn get_start_apps() -> Vec<(String, String)> {
             "-NoProfile", "-NonInteractive", "-Command",
             "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress",
         ])
+        .no_window()
         .output();
 
     if let Ok(o) = out {
