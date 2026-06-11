@@ -73,12 +73,24 @@ const CapBadge: React.FC<{ state: null | "testing" | "yes" | "no" | "skip" }> = 
 };
 
 const PROVIDER_DEFAULTS: Record<string, { displayName: string; modelName: string; baseUrl: string; visionExpected: boolean }> = {
-  openai:     { displayName: "OpenAI GPT-4o mini",    modelName: "gpt-4o-mini",              baseUrl: "", visionExpected: true  },
+  openai:     { displayName: "OpenAI GPT-4.1 mini",   modelName: "gpt-4.1-mini",             baseUrl: "", visionExpected: true  },
   anthropic:  { displayName: "Anthropic Claude",       modelName: "claude-3-5-sonnet-latest", baseUrl: "", visionExpected: true  },
   deepseek:   { displayName: "DeepSeek Chat",          modelName: "deepseek-chat",            baseUrl: "", visionExpected: false },
   openrouter: { displayName: "OpenRouter Gemini Flash", modelName: "google/gemini-2.5-flash", baseUrl: "", visionExpected: true  },
   custom:     { displayName: "Custom Model",           modelName: "my-model",                 baseUrl: "http://localhost:1234/v1", visionExpected: false },
 };
+
+// Popular OpenAI model suggestions shown as quick-fill chips
+const OPENAI_MODEL_SUGGESTIONS = [
+  { label: "GPT-4.1",       slug: "gpt-4.1",        vision: true  },
+  { label: "GPT-4.1 mini",  slug: "gpt-4.1-mini",   vision: true  },
+  { label: "GPT-4.1 nano",  slug: "gpt-4.1-nano",   vision: true  },
+  { label: "GPT-4o",        slug: "gpt-4o",          vision: true  },
+  { label: "GPT-4o mini",   slug: "gpt-4o-mini",     vision: true  },
+  { label: "o3",            slug: "o3",              vision: false },
+  { label: "o4-mini",       slug: "o4-mini",         vision: false },
+  { label: "o3-mini",       slug: "o3-mini",         vision: false },
+];
 
 const ModelForm: React.FC<ModelFormProps> = ({
   editModel, onSave, onCancel, addCustomModel, updateCustomModel, testModelFn
@@ -347,10 +359,34 @@ const ModelForm: React.FC<ModelFormProps> = ({
           </label>
           <input
             required value={modelName}
-            onChange={(e) => setModelName(e.target.value)}
-            placeholder="e.g. gpt-4o-mini"
+            onChange={(e) => { setModelName(e.target.value); resetCaps(); }}
+            placeholder="e.g. gpt-4.1-mini"
             className="w-full px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono"
           />
+          {/* Quick-fill chips for OpenAI */}
+          {provider === "openai" && !isEdit && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {OPENAI_MODEL_SUGGESTIONS.map((s) => (
+                <button
+                  key={s.slug}
+                  type="button"
+                  onClick={() => {
+                    setModelName(s.slug);
+                    setDisplayName(`OpenAI ${s.label}`);
+                    resetCaps();
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors ${
+                    modelName === s.slug
+                      ? "bg-accent border-accent text-accent-contrast"
+                      : "bg-surface3 border-border text-text-secondary hover:border-border-light hover:text-text"
+                  }`}
+                >
+                  {s.label}
+                  {s.vision && <span className="ml-1 opacity-60 text-[9px]">👁</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -54,21 +54,57 @@ pub fn model_is_reasoning(model: &CustomModel) -> bool {
     }
 }
 
+/// Returns true for OpenAI models that require `max_completion_tokens` instead
+/// of `max_tokens` in the Chat Completions API.
+///
+/// As of mid-2025, this includes:
+///   - All o-series (o1, o3, o4, o3-mini, o4-mini, o3-pro, o1-pro, …)
+///   - GPT-4.1 series (gpt-4.1, gpt-4.1-mini, gpt-4.1-nano)
+///   - GPT-5 series (gpt-5, gpt-5-mini, …)
+///
+/// Legacy models (gpt-4o, gpt-4-turbo, gpt-3.5-turbo, gpt-4) still use `max_tokens`.
+fn openai_needs_completion_tokens(name: &str) -> bool {
+    // o-series: o1*, o3*, o4* (e.g. o1-mini, o3-mini, o4-mini, o3-pro)
+    name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+    // GPT-4.1 family
+    || name.contains("gpt-4.1")
+    // GPT-5 family
+    || name.contains("gpt-5")
+}
+
+/// Returns true for OpenAI models that do NOT accept a `temperature` parameter.
+/// These are the pure reasoning models where internal sampling is fixed.
+///   - o1, o1-mini, o1-pro
+///   - o3, o3-mini, o3-pro
+///   - o4, o4-mini
+fn openai_no_temperature(name: &str) -> bool {
+    name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+}
+
+/// Returns true for OpenAI models that do NOT accept `response_format`.
+/// This currently includes all o-series reasoning models.
+fn openai_no_response_format(name: &str) -> bool {
+    // o-series models do not support response_format: json_object
+    name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+}
+
 fn supports_vision(model: &CustomModel) -> bool {
     let provider = model.provider_type.to_lowercase();
     let model_name = model.model_name.to_lowercase();
 
     match provider.as_str() {
-        // DeepSeek: NO vision support on any current model
-        "deepseek" => false,
-        // OpenAI: vision requires gpt-4o, gpt-4-vision, o1, etc.
+        // DeepSeek: NO vision support on current text/code models
+        "deepseek" => model_name.contains("vl") || model_name.contains("vision"),
+        // OpenAI: gpt-4o, gpt-4.1 series, o1/o3/o4 all support vision
         "openai" => {
             model_name.contains("gpt-4o")
+                || model_name.contains("gpt-4.1")
                 || model_name.contains("gpt-4-turbo")
                 || model_name.contains("gpt-4-vision")
-                || model_name.contains("o1")
-                || model_name.contains("o3")
-                || model_name.contains("o4")
+                || model_name.contains("gpt-5")
+                || model_name.starts_with("o1")
+                || model_name.starts_with("o3")
+                || model_name.starts_with("o4")
         }
         // Anthropic: claude-3+ all support vision
         "anthropic" => {
@@ -80,6 +116,7 @@ fn supports_vision(model: &CustomModel) -> bool {
         // OpenRouter: assume vision if the model name includes common vision model identifiers
         "openrouter" => {
             model_name.contains("gpt-4o")
+                || model_name.contains("gpt-4.1")
                 || model_name.contains("claude-3")
                 || model_name.contains("gemini")
                 || model_name.contains("vision")
@@ -88,20 +125,20 @@ fn supports_vision(model: &CustomModel) -> bool {
         }
         // Custom: only if model name explicitly suggests vision
         "custom" => model_name.contains("vision") || model_name.contains("llava"),
-        // Default: assume no vision to be safe
         _ => false,
     }
 }
 
 /// Lightweight connectivity check — sends a single "reply OK" message with no
-/// JSON mode enforced and no screenshot. Used by test_model_connection and
-/// test_stored_model so a real key always succeeds.
+/// JSON mode enforced and no screenshot. Handles `max_completion_tokens` vs
+/// `max_tokens` automatically so new models don't fail the test.
 pub async fn test_connection(model: &CustomModel, api_key: &str) -> anyhow::Result<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
     let provider = model.provider_type.to_lowercase();
+    let name = model.model_name.to_lowercase();
 
     if provider == "anthropic" {
         let payload = json!({
@@ -128,22 +165,26 @@ pub async fn test_connection(model: &CustomModel, api_key: &str) -> anyhow::Resu
     }
 
     // OpenAI-compatible (openai, openrouter, deepseek, custom)
-    let base_url = match provider.as_str() {
-        "openai"     => "https://api.openai.com/v1".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
-        _            => model.base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-    };
+    let base_url = resolve_openai_base_url(&provider, &model.base_url);
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
-    // NOTE: No response_format: json_object here — just a plain chat call.
-    // json_object mode requires the word "json" in the prompt and breaks simple
-    // connectivity tests.
-    let payload = json!({
+    // Use the correct token parameter for this model
+    let token_key = if provider == "openai" && openai_needs_completion_tokens(&name) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+
+    let mut payload = json!({
         "model": model.model_name,
-        "max_tokens": 10,
+        token_key: 10,
         "messages": [{"role": "user", "content": "Reply with the single word OK."}]
     });
+
+    // Reasoning models don't accept temperature
+    if !(provider == "openai" && openai_no_temperature(&name)) {
+        payload.as_object_mut().unwrap().insert("temperature".to_string(), json!(0));
+    }
 
     let mut req = client
         .post(&url)
@@ -165,6 +206,16 @@ pub async fn test_connection(model: &CustomModel, api_key: &str) -> anyhow::Resu
     let parsed: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| anyhow::anyhow!("Failed to parse {} response: {} — raw: {}", model.provider_type, e, body))?;
     Ok(parsed["choices"][0]["message"]["content"].as_str().unwrap_or("OK").to_string())
+}
+
+/// Helper: resolve Chat Completions base URL for a given provider.
+fn resolve_openai_base_url(provider: &str, base_url: &Option<String>) -> String {
+    match provider {
+        "openai"     => "https://api.openai.com/v1".to_string(),
+        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
+        _            => base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+    }
 }
 
 pub async fn send_chat_request(
@@ -203,40 +254,44 @@ async fn send_openai_compatible_request(
     messages: Vec<ChatMessage>,
     screenshot_base64: Option<String>,
 ) -> anyhow::Result<String> {
-    let base_url = match model.provider_type.to_lowercase().as_str() {
-        "openai"     => "https://api.openai.com/v1".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
-        _            => model.base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-    };
-
+    let provider = model.provider_type.to_lowercase();
+    let name = model.model_name.to_lowercase();
+    let base_url = resolve_openai_base_url(&provider, &model.base_url);
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     let body_messages = build_messages_openai(messages, screenshot_base64);
-
-    let provider = model.provider_type.to_lowercase();
     let reasoning = model_is_reasoning(model);
-    let mut payload = if reasoning {
-        json!({
-            "model": model.model_name,
-            "messages": body_messages,
-            "max_tokens": 2048
-        })
+
+    // ── Determine the correct token-limit parameter name ──────────────────
+    // gpt-4.1/gpt-4.1-mini/gpt-4.1-nano and all o-series require
+    // `max_completion_tokens`; older models use `max_tokens`.
+    let token_key = if provider == "openai" && openai_needs_completion_tokens(&name) {
+        "max_completion_tokens"
     } else {
-        json!({
-            "model": model.model_name,
-            "messages": body_messages,
-            "max_tokens": 1024,
-            "temperature": 0.2
-        })
+        "max_tokens"
     };
 
-    // Force JSON mode for compatible providers (prevents malformed JSON from
-    // free/small models that omit quotes on keys or return invalid syntax).
-    if !reasoning {
+    let token_value: u32 = if reasoning { 2048 } else { 1024 };
+
+    let mut payload = json!({
+        "model": model.model_name,
+        "messages": body_messages,
+        token_key: token_value,
+    });
+
+    let obj = payload.as_object_mut().unwrap();
+
+    // temperature: omit for OpenAI reasoning models (o1/o3/o4 series)
+    if !(provider == "openai" && openai_no_temperature(&name)) {
+        obj.insert("temperature".to_string(), json!(0.2));
+    }
+
+    // response_format: json_object — only for non-reasoning, compatible providers
+    // Never send this to o-series (they reject it) or reasoning models (no point)
+    if !reasoning && !(provider == "openai" && openai_no_response_format(&name)) {
         match provider.as_str() {
             "openai" | "openrouter" | "deepseek" => {
-                payload.as_object_mut().unwrap().insert(
+                obj.insert(
                     "response_format".to_string(),
                     json!({"type": "json_object"}),
                 );
@@ -370,6 +425,7 @@ pub async fn test_vision_capability(model: &CustomModel, api_key: &str) -> bool 
     };
 
     let provider = model.provider_type.to_lowercase();
+    let name = model.model_name.to_lowercase();
 
     if provider == "anthropic" {
         let payload = json!({
@@ -405,16 +461,19 @@ pub async fn test_vision_capability(model: &CustomModel, api_key: &str) -> bool 
         }
     } else {
         // OpenAI-compatible format
-        let base_url = match provider.as_str() {
-            "openai"     => "https://api.openai.com/v1".to_string(),
-            "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-            "deepseek"   => "https://api.deepseek.com/v1".to_string(),
-            _            => model.base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-        };
+        let base_url = resolve_openai_base_url(&provider, &model.base_url);
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-        let payload = json!({
+
+        // Use correct token param for this model
+        let token_key = if provider == "openai" && openai_needs_completion_tokens(&name) {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+
+        let mut payload = json!({
             "model": model.model_name,
-            "max_tokens": 10,
+            token_key: 10,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -423,6 +482,12 @@ pub async fn test_vision_capability(model: &CustomModel, api_key: &str) -> bool 
                 ]
             }]
         });
+
+        // Don't add temperature to o-series
+        if !(provider == "openai" && openai_no_temperature(&name)) {
+            payload.as_object_mut().unwrap().insert("temperature".to_string(), json!(0));
+        }
+
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
@@ -533,12 +598,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Resolve the chat-completions base URL for a provider.
 fn resolve_base_url(provider: &str, base_url: &Option<String>) -> String {
-    match provider {
-        "openai"     => "https://api.openai.com/v1".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
-        _            => base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-    }
+    resolve_openai_base_url(provider, base_url)
 }
 
 /// Builds a minimal valid silent WAV file (44-byte header, no samples), base64-encoded.
@@ -561,30 +621,22 @@ fn minimal_wav_base64() -> String {
 }
 
 /// Interprets a probe HTTP result for a given modality keyword.
-/// Returns true if the modality is supported.
-///   - 200            => supported
-///   - 401/403        => auth error, cannot determine -> false
-///   - error mentions the modality / "unsupported" / "not support" => NOT supported
-///   - error mentions "invalid"/"format"/"decode"/"corrupt"/"size" => the model TRIED
-///       to process the media (so it accepts the modality) => supported
 fn interpret_modality_response(status: u16, body: &str, modality: &str) -> bool {
     if status == 200 { return true; }
     if status == 401 || status == 403 { return false; }
 
     let b = body.to_lowercase();
 
-    // Explicit "not supported" signals → modality unavailable
     let unsupported = b.contains(&format!("does not support {}", modality))
         || b.contains(&format!("not support {}", modality))
         || b.contains(&format!("{} not supported", modality))
-        || b.contains(&format!("{}_url", modality))     // e.g. "video_url is not a valid content type"
+        || b.contains(&format!("{}_url", modality))
         || b.contains("unsupported")
         || b.contains("not a valid content")
         || b.contains("invalid content type")
         || b.contains("unknown variant")
         || b.contains("modality");
 
-    // "Tried to decode" signals → modality accepted (model attempted processing)
     let tried_to_process = b.contains("invalid")
         || b.contains("decode")
         || b.contains("corrupt")
@@ -599,20 +651,26 @@ fn interpret_modality_response(status: u16, body: &str, modality: &str) -> bool 
     }
 }
 
-/// Probe whether the model accepts audio input (OpenAI input_audio content type).
+/// Probe whether the model accepts audio input.
 pub async fn test_audio_capability(
     provider: &str, model_name: &str, base_url: &Option<String>, api_key: &str,
 ) -> bool {
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
         Ok(c) => c, Err(_) => return false,
     };
-    // Anthropic / DeepSeek don't support audio input in chat API
     if provider == "anthropic" { return false; }
 
+    let name = model_name.to_lowercase();
+    let token_key = if provider == "openai" && openai_needs_completion_tokens(&name) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+
     let url = format!("{}/chat/completions", resolve_base_url(provider, base_url).trim_end_matches('/'));
-    let payload = json!({
+    let mut payload = json!({
         "model": model_name,
-        "max_tokens": 5,
+        token_key: 5,
         "messages": [{
             "role": "user",
             "content": [
@@ -621,6 +679,10 @@ pub async fn test_audio_capability(
             ]
         }]
     });
+    if !(provider == "openai" && openai_no_temperature(&name)) {
+        payload.as_object_mut().unwrap().insert("temperature".to_string(), json!(0));
+    }
+
     let mut req = client.post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json");
@@ -637,23 +699,27 @@ pub async fn test_audio_capability(
     }
 }
 
-/// Probe whether the model accepts video input (OpenRouter video_url content type).
+/// Probe whether the model accepts video input.
 pub async fn test_video_capability(
     provider: &str, model_name: &str, base_url: &Option<String>, api_key: &str,
 ) -> bool {
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
         Ok(c) => c, Err(_) => return false,
     };
-    // Only OpenRouter (and some custom gateways) expose video_url. OpenAI/DeepSeek/Anthropic don't.
     if provider == "openai" || provider == "deepseek" || provider == "anthropic" { return false; }
 
+    let name = model_name.to_lowercase();
+    let token_key = if provider == "openai" && openai_needs_completion_tokens(&name) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+
     let url = format!("{}/chat/completions", resolve_base_url(provider, base_url).trim_end_matches('/'));
-    // Tiny dummy mp4 data URL — non-video models reject the content type immediately;
-    // video models attempt to decode (and fail on format) which we treat as "supported".
     let dummy_video = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
     let payload = json!({
         "model": model_name,
-        "max_tokens": 5,
+        token_key: 5,
         "messages": [{
             "role": "user",
             "content": [
@@ -697,3 +763,4 @@ pub async fn probe_model_video(
     let real_key = resolve_probe_key(&api_key, model_id.as_deref())?;
     Ok(test_video_capability(&provider_type.to_lowercase(), &model_name, &base_url, &real_key).await)
 }
+
