@@ -252,6 +252,11 @@ export const FloatingOverlay: React.FC = () => {
         } else if (phase === "thinking") {
           setHeaderText(s.header || "Planning…");
           setState("thinking");
+        } else if (phase === "listening") {
+          // Mic is active — show listening state driven by polling
+          // (handles the race where hotkey:mic_start event was missed)
+          setState((prev) => prev === "listening" ? prev : "listening");
+          setHeaderText(s.header || "Listening…");
         }
       } catch (_) { /* backend not ready */ }
     };

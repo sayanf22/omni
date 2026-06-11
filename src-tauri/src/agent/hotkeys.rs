@@ -234,9 +234,15 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
                 }
                 let _ = overlay.set_focus();
             }
+            // Pre-set live state to "listening" BEFORE emitting — this ensures
+            // the 350ms polling loop also picks it up even if the event is missed
+            // (e.g. overlay webview not yet mounted on cold start).
+            crate::agent::planner::live_reset();
+            crate::agent::planner::live_set_phase("listening", "Listening…");
             let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
             if let Err(e) = crate::voice::stt::start_mic_recording(app.clone()) {
                 tracing::error!("Failed to start mic recording: {:?}", e);
+                crate::agent::planner::live_reset();
                 let _ = app.emit("hotkey:mic_stop", serde_json::json!({}));
                 let _ = app.emit("task:failed", serde_json::json!({
                     "error": format!("Could not start microphone: {}", e)

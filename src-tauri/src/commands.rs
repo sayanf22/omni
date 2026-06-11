@@ -16,6 +16,9 @@ pub async fn trigger_mic_start(app: tauri::AppHandle) -> Result<(), String> {
             let _ = overlay.set_position(tauri::LogicalPosition::new(x, 40.0));
         }
     }
+    // Pre-set live state so polling picks it up even if event is missed
+    crate::agent::planner::live_reset();
+    crate::agent::planner::live_set_phase("listening", "Listening…");
     let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
     start_mic_recording(app).map_err(|e| e.to_string())
 }

@@ -966,33 +966,55 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
         // ── Parse AI response ────────────────────────────────────────────────
         let parsed: Value = {
-            // Try direct parse first
+            // ── Pass 1: direct parse ─────────────────────────────────────────
             let r1 = serde_json::from_str::<Value>(&ai_response);
             match r1 {
                 Ok(v) => v,
                 Err(_) => {
-                    // Try stripping markdown code fences
+                    // ── Pass 2: strip markdown code fences ───────────────────
                     let clean = ai_response.trim()
                         .trim_start_matches("```json").trim_start_matches("```")
                         .trim_end_matches("```").trim();
                     match serde_json::from_str::<Value>(clean) {
                         Ok(v) => v,
                         Err(e) => {
-                            // One final attempt: find JSON object in the response
-                            if let Some(start) = ai_response.find('{') {
-                                if let Some(end) = ai_response.rfind('}') {
-                                    if let Ok(v) = serde_json::from_str::<Value>(&ai_response[start..=end]) {
-                                        v
-                                    } else {
-                                        final_status = "failed".to_string();
-                                        final_outcome = format!("AI returned invalid JSON: {}", e);
-                                        let _ = app.emit("task:failed", serde_json::json!({
-                                            "task_id": task_id.clone(),
-                                            "error": final_outcome.clone()
-                                        }));
-                                        break 'main;
+                            // ── Pass 3: balanced-brace JSON extraction ────────
+                            // Walk forward from the first '{' counting nesting
+                            // depth so we correctly handle nested objects/arrays.
+                            // This fixes "trailing characters" errors caused by
+                            // models appending prose after the JSON object.
+                            fn extract_first_json_obj(s: &str) -> Option<&str> {
+                                let start = s.find('{')?;
+                                let bytes = s.as_bytes();
+                                let mut depth: i32 = 0;
+                                let mut in_str = false;
+                                let mut esc = false;
+                                for (i, &b) in bytes[start..].iter().enumerate() {
+                                    if esc { esc = false; continue; }
+                                    match b {
+                                        b'\\' if in_str => { esc = true; }
+                                        b'"' => { in_str = !in_str; }
+                                        b'{' if !in_str => { depth += 1; }
+                                        b'}' if !in_str => {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                return Some(&s[start..start + i + 1]);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                } else {
+                                }
+                                None
+                            }
+
+                            let candidate = extract_first_json_obj(&ai_response)
+                                .or_else(|| extract_first_json_obj(clean));
+
+                            match candidate.and_then(|c| serde_json::from_str::<Value>(c).ok()) {
+                                Some(v) => v,
+                                None => {
+                                    // All passes failed — log the raw response for debugging
+                                    tracing::warn!("JSON parse failed after 3 passes. Raw response: {}", &ai_response[..ai_response.len().min(500)]);
                                     final_status = "failed".to_string();
                                     final_outcome = format!("AI returned invalid JSON: {}", e);
                                     let _ = app.emit("task:failed", serde_json::json!({
@@ -1001,14 +1023,6 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                                     }));
                                     break 'main;
                                 }
-                            } else {
-                                final_status = "failed".to_string();
-                                final_outcome = format!("AI returned non-JSON: {}", ai_response);
-                                let _ = app.emit("task:failed", serde_json::json!({
-                                    "task_id": task_id.clone(),
-                                    "error": final_outcome.clone()
-                                }));
-                                break 'main;
                             }
                         }
                     }
