@@ -652,7 +652,39 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
            find_text 'Compose' -> click -> type recipient, subject, body -> Send\n\
          \n\
          ▸ SPOTIFY (play music):\n\
-           open spotify -> find_text 'Search' -> click -> type song/artist -> Enter -> click result\n\
+           CRITICAL RULE: You MUST actually start playback. Just opening Spotify or navigating\n\
+           to an album is NOT done. The task is done ONLY when a song is PLAYING (you see\n\
+           the progress bar moving at the bottom, or OCR shows the song name in the player).\n\
+           \n\
+           STEP BY STEP:\n\
+           1. app open name=spotify  (or focus if already running)\n\
+           2. app wait ms=1500\n\
+           3. Press Ctrl+L or find the Search field at the top: screen find_text 'What do you want to play'\n\
+              OR keyboard hotkey ctrl+l  (focuses the search bar directly)\n\
+           4. keyboard type the song/artist name\n\
+           5. app wait ms=1000\n\
+           6. screen ocr  → read the search results on screen\n\
+           7. screen find_text '<song title>'  → get exact coordinates of the first song result\n\
+           8. mouse double_click x=<x> y=<y>  → double-click to play immediately\n\
+              (single click opens the track, double click PLAYS it)\n\
+           9. app wait ms=1500\n\
+           10. screen ocr → verify the song name appears at the bottom of Spotify (the playback bar)\n\
+           11. done: 'Now playing: <song name>'\n\
+           \n\
+           IF double-click doesn't work:\n\
+           - single click the track row → then click the green Play button that appears\n\
+           - OR press keyboard key=enter after clicking the result\n\
+           \n\
+           FOR KEYBOARD SHORTCUT SEARCH (fastest):\n\
+           1. app open name=spotify\n\
+           2. keyboard hotkey ctrl+l  → focuses search\n\
+           3. keyboard type <song name>\n\
+           4. keyboard key=enter → executes search\n\
+           5. app wait ms=1500\n\
+           6. screen ocr → read results\n\
+           7. screen find_text '<first song title>' → get coords\n\
+           8. mouse double_click → play\n\
+           9. verify playback at bottom → done\n\
          \n\
          ▸ ANY CHAT APP — general pattern:\n\
            1. Open app (already running = instant focus)\n\
@@ -694,6 +726,25 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             name and re-confirm. Only after they say it's correct do you type and send.\n\
          \n\
          == WORKED EXAMPLES ==\n\
+         TASK: 'play <song> on Spotify'  (MUST verify playback)\n\
+           1 {{\"thought\":\"Open Spotify and search\",\"actions\":[\
+{{\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"spotify\"}}}},\
+{{\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":1500}}}},\
+{{\"tool\":\"keyboard\",\"params\":{{\"action\":\"hotkey\",\"keys\":\"ctrl+l\"}}}}]}}\n\
+           2 {{\"thought\":\"Type song name in search\",\"actions\":[\
+{{\"tool\":\"keyboard\",\"params\":{{\"action\":\"type\",\"text\":\"<song name>\"}}}},\
+{{\"tool\":\"keyboard\",\"params\":{{\"action\":\"key\",\"key\":\"enter\"}}}},\
+{{\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":1500}}}},\
+{{\"tool\":\"screen\",\"params\":{{\"action\":\"ocr\"}}}}]}}\n\
+           3 (after reading OCR — find the song row)\n\
+             {{\"thought\":\"Double-click the song to play it\",\"actions\":[\
+{{\"tool\":\"screen\",\"params\":{{\"action\":\"find_text\",\"query\":\"<song title from OCR>\"}}}},\
+{{\"tool\":\"mouse\",\"params\":{{\"action\":\"double_click\",\"x\":\"<x>\",\"y\":\"<y>\"}}}},\
+{{\"tool\":\"app\",\"params\":{{\"action\":\"wait\",\"ms\":1500}}}},\
+{{\"tool\":\"screen\",\"params\":{{\"action\":\"ocr\"}}}}]}}\n\
+           4 (verify song name is in the playback bar at the bottom, then done)\n\
+             {{\"done\":true,\"result\":\"Now playing <song name> on Spotify 🎵\"}}\n\
+         \n\
          TASK: 'open notepad and write Hello World'  (BATCHED — fast)\n\
            1 {{\"thought\":\"Open Notepad and type in one go\",\"actions\":[\
 {{\"tool\":\"app\",\"params\":{{\"action\":\"open\",\"name\":\"notepad\"}}}},\
@@ -1070,41 +1121,62 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             let result_str = parsed["result"].as_str().unwrap_or("Done").to_string();
 
             // ── Premature-done guard ─────────────────────────────────────────
-            // Catch the common failure where the agent opens an app then declares
-            // done without finishing a "send/write/type/fill" task. We push back
-            // exactly once with a reminder of what's left.
             let instr_lower = instruction.to_lowercase();
             let task_needs_typing = ["send", "message", "write", "type", "post",
                 "reply", "email", "compose", "fill", "search for", "comment", "tweet"]
                 .iter().any(|kw| instr_lower.contains(kw));
-            let task_needs_interaction = task_needs_typing || ["click", "open and",
-                "play", "navigate", "go to", "find"].iter().any(|kw| instr_lower.contains(kw));
 
+            // Media/play tasks: the song/video must actually be PLAYING, not just opened.
+            let task_needs_playback = ["play", "listen", "music", "song", "spotify",
+                "youtube", "video", "watch", "queue", "shuffle"]
+                .iter().any(|kw| instr_lower.contains(kw));
+
+            let task_needs_interaction = task_needs_typing || task_needs_playback
+                || ["click", "open and", "navigate", "go to", "find"]
+                    .iter().any(|kw| instr_lower.contains(kw));
+
+            // For playback tasks: require at least a double-click or the play button was pressed.
+            // We track this via did_interact (any mouse/keyboard action counts).
+            // Also enforce a minimum of 3 steps — open + search + click-to-play.
             let premature = !premature_done_pushed && (
                 (task_needs_typing && !did_type_text) ||
+                (task_needs_playback && (!did_interact || step_num <= 3)) ||
                 (task_needs_interaction && !did_interact && step_num <= 2)
             );
 
             if premature {
                 premature_done_pushed = true;
+                let reason = if task_needs_playback {
+                    "actually started playback (you must double-click the song or press Play so the music is actually playing, then OCR to confirm it is playing)"
+                } else if task_needs_typing {
+                    "typed and sent/written the required text"
+                } else {
+                    "finished all the requested actions"
+                };
                 let _ = app.emit("task:step", serde_json::json!({
                     "step_num": step_num,
                     "thought": "Re-checking: the task isn't fully done yet.",
                     "tool": null,
-                    "description": "Opening the app is not the whole task — continuing to complete it.",
+                    "description": format!("Not done yet — need to: {}", reason),
                     "success": false
                 }));
                 messages.push(ChatMessage { role: "assistant".to_string(), content: ai_response });
                 messages.push(ChatMessage {
                     role: "user".to_string(),
                     content: format!(
-                        "STOP — the task is NOT complete yet. You only did part of it. \
-                         The full task was: \"{}\". \
-                         You have not actually {}. \
-                         Do NOT output done. Continue with the next concrete step now \
-                         (e.g. find the search box, type the contact, click it, type the message, then send).",
+                        "STOP — the task is NOT complete yet. The full task was: \"{}\". \
+                         You have NOT {}. \
+                         Do NOT output done. \
+                         {}",
                         instruction,
-                        if task_needs_typing { "typed and sent/written the required text" } else { "finished the requested actions" }
+                        reason,
+                        if task_needs_playback {
+                            "Next step: double-click the song row to start playing it, wait 1.5s, \
+                             then OCR to confirm the song name appears in the bottom playback bar. \
+                             Only then output done."
+                        } else {
+                            "Continue with the next concrete step now."
+                        }
                     ),
                 });
                 step_num += 1;
@@ -1182,12 +1254,81 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
             }
         }
         if batch.is_empty() {
-            final_status = "failed".to_string();
-            final_outcome = format!("AI response missing 'tool'/'actions'. Got: {}", ai_response);
-            let _ = app.emit("task:failed", serde_json::json!({
-                "task_id": task_id.clone(), "error": final_outcome.clone()
-            }));
-            break 'main;
+            // The first JSON object had no tool/actions.
+            // The model sometimes outputs two consecutive objects — try extracting
+            // the SECOND one which usually contains the actual tool call.
+            fn extract_nth_json_obj(s: &str, skip: usize) -> Option<&str> {
+                let mut found = 0usize;
+                let bytes = s.as_bytes();
+                let mut search_from = 0usize;
+                loop {
+                    let offset = s[search_from..].find('{')?;
+                    let start = search_from + offset;
+                    let mut depth = 0i32;
+                    let mut in_str = false;
+                    let mut esc = false;
+                    let mut end_pos = None;
+                    for (i, &b) in bytes[start..].iter().enumerate() {
+                        if esc { esc = false; continue; }
+                        match b {
+                            b'\\' if in_str => { esc = true; }
+                            b'"' => { in_str = !in_str; }
+                            b'{' if !in_str => { depth += 1; }
+                            b'}' if !in_str => {
+                                depth -= 1;
+                                if depth == 0 { end_pos = Some(start + i + 1); break; }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let end = end_pos?;
+                    if found == skip {
+                        return Some(&s[start..end]);
+                    }
+                    found += 1;
+                    search_from = end;
+                }
+            }
+
+            // Try second, third JSON objects in the response
+            let mut recovered = false;
+            for skip in 1..=3usize {
+                if let Some(candidate) = extract_nth_json_obj(&ai_response, skip) {
+                    if let Ok(v2) = serde_json::from_str::<Value>(candidate) {
+                        if v2["tool"].as_str().is_some() || v2["actions"].as_array().is_some()
+                            || v2["done"].as_bool().is_some() || v2["question"].as_str().is_some()
+                        {
+                            // Re-dispatch with this JSON
+                            tracing::info!("Recovered tool call from JSON object #{} in response", skip + 1);
+                            // Collect actions from recovered object
+                            if let Some(arr) = v2["actions"].as_array() {
+                                for a in arr {
+                                    if let Some(n) = a["tool"].as_str() {
+                                        batch.push((n.to_string(), a["params"].clone()));
+                                    }
+                                }
+                            }
+                            if batch.is_empty() {
+                                if let Some(name) = v2["tool"].as_str() {
+                                    batch.push((name.to_string(), v2["params"].clone()));
+                                }
+                            }
+                            recovered = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !recovered && batch.is_empty() {
+                tracing::warn!("No tool/actions in any JSON object. Raw: {}", &ai_response[..ai_response.len().min(300)]);
+                final_status = "failed".to_string();
+                final_outcome = format!("AI response missing 'tool'/'actions'. Got: {}", &ai_response[..ai_response.len().min(200)]);
+                let _ = app.emit("task:failed", serde_json::json!({
+                    "task_id": task_id.clone(), "error": final_outcome.clone()
+                }));
+                break 'main;
+            }
         }
 
         // ── Anti-repeat guard over the WHOLE turn's plan ─────────────────────
