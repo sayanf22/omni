@@ -113,7 +113,7 @@ export const FloatingOverlay: React.FC = () => {
   const innerBg = isLight ? "rgba(255, 255, 255, 0.95)" : "rgba(8, 8, 12, 0.50)";
   const textColor = isLight ? "#1f2937" : "rgba(255,255,255,0.85)";
   const textColorSecondary = isLight ? "#4b5563" : "rgba(255,255,255,0.55)";
-  const textColorMuted = isLight ? "#9ca3af" : "rgba(255,255,255,0.3)";
+  // textColorMuted available for future use: isLight ? "#9ca3af" : "rgba(255,255,255,0.3)"
 
   const glassCard: React.CSSProperties = {
     background: cardBg,
