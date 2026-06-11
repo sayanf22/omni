@@ -776,6 +776,218 @@ const ModelCard: React.FC<ModelCardProps> = ({ model, onEdit, onDelete, onToggle
   );
 };
 
+// ── Settings two-column layout (Wispr Flow style) ────────────────────────────
+
+type SettingsSection = "general" | "data-privacy";
+
+const SettingsLayout: React.FC<{
+  activeSection: SettingsSection;
+  onSectionChange: (s: SettingsSection) => void;
+  children: React.ReactNode;
+}> = ({ activeSection, onSectionChange, children }) => {
+  const settingsNav: Array<{
+    group?: string;
+    items: Array<{ id: SettingsSection; label: string; icon: React.ReactNode }>;
+  }> = [
+    {
+      group: "SETTINGS",
+      items: [
+        {
+          id: "general",
+          label: "General",
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          ),
+        },
+      ],
+    },
+    {
+      group: "ACCOUNT",
+      items: [
+        {
+          id: "data-privacy",
+          label: "Data and Privacy",
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          ),
+        },
+      ],
+    },
+  ];
+
+  return (
+    <div className="flex gap-0 h-full min-h-0" style={{ height: "calc(100vh - 100px)" }}>
+      {/* Left sidebar */}
+      <div className="w-52 shrink-0 pr-6 border-r border-border/30 overflow-y-auto">
+        <div className="space-y-5">
+          {settingsNav.map((group) => (
+            <div key={group.group || "nogroup"}>
+              {group.group && (
+                <p className="text-[10px] font-black uppercase tracking-widest text-text-muted mb-2 px-1">{group.group}</p>
+              )}
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => onSectionChange(item.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13.5px] font-semibold transition-all text-left ${
+                      activeSection === item.id
+                        ? "bg-surface2 border border-border/60 text-text"
+                        : "text-text-secondary hover:text-text hover:bg-surface2/50"
+                    }`}
+                  >
+                    <span className={activeSection === item.id ? "text-text" : "text-text-muted"}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Right content */}
+      <div className="flex-1 pl-8 overflow-y-auto min-w-0">
+        {children}
+      </div>
+    </div>
+  );
+};
+
+// ── Data and Privacy Section ──────────────────────────────────────────────────
+
+const DataPrivacySection: React.FC = () => {
+
+  const sections = [
+    {
+      title: "What Omni Collects",
+      icon: "📋",
+      items: [
+        {
+          label: "Voice commands",
+          desc: "When you press Ctrl+Shift+A and speak, your audio is recorded locally, transcribed, and immediately deleted. Audio is never stored or sent to any server except the STT engine you choose (local Whisper, ElevenLabs, or Windows SAPI).",
+        },
+        {
+          label: "Task history",
+          desc: "Every task you run is saved locally in an SQLite database on your PC (C:\\Users\\<you>\\AppData\\Roaming\\Omni\\omni.db). This includes the instruction text, steps taken, and outcome. This data syncs to your Supabase account for multi-device access.",
+        },
+        {
+          label: "AI model API keys",
+          desc: "Your API keys (OpenAI, Anthropic, etc.) are stored exclusively in Windows Credential Manager (DPAPI-encrypted). They are never written to disk in plaintext, never logged, and never sent to any server other than the AI provider you configured.",
+        },
+        {
+          label: "Login credentials",
+          desc: "Your email and session tokens are stored in Windows Credential Manager. Passwords are hashed by Supabase (bcrypt) and cannot be read — not even by Omni. Session tokens auto-refresh and expire after 7 days of inactivity.",
+        },
+        {
+          label: "Screen captures",
+          desc: "Screenshots are taken during tasks if your AI model supports vision. They are sent directly to your configured AI provider (e.g. OpenAI) and are never stored locally or on any Omni server.",
+        },
+        {
+          label: "Audit log",
+          desc: "Every tool action the agent takes (mouse clicks, keyboard input, app launches) is logged to the local Activity log. This is for your review only. It syncs to your Supabase account.",
+        },
+      ],
+    },
+    {
+      title: "What Omni Does NOT Collect",
+      icon: "🚫",
+      items: [
+        { label: "No keystroke logging", desc: "Omni does not record your keyboard outside of active tasks." },
+        { label: "No background screen recording", desc: "Screenshots are only taken during active agent tasks, never in the background." },
+        { label: "No selling of data", desc: "Your data is never sold, shared, or used for advertising." },
+        { label: "No crash telemetry", desc: "No analytics or crash reports are sent anywhere." },
+      ],
+    },
+    {
+      title: "Data Storage & Sync",
+      icon: "☁️",
+      items: [
+        {
+          label: "Local-first",
+          desc: "All data is stored locally on your PC first. Cloud sync to Supabase is optional and only runs when you're signed in.",
+        },
+        {
+          label: "Your Supabase instance",
+          desc: "This app connects to a dedicated Supabase project (bnejdnufjfeqilatdegl). Your data is isolated to your account and not shared with other users.",
+        },
+        {
+          label: "Deleting your data",
+          desc: "Go to Settings → General → scroll to the bottom to find 'Clear all local data'. This wipes all tasks, audit logs, and settings from your device. To delete your account, contact support.",
+        },
+      ],
+    },
+    {
+      title: "Third-Party Services",
+      icon: "🔗",
+      items: [
+        { label: "AI providers", desc: "OpenAI, Anthropic, DeepSeek, OpenRouter — your prompts and screenshots go directly from your PC to these providers. Review their privacy policies." },
+        { label: "ElevenLabs (optional)", desc: "If you enable cloud voice, audio clips are sent to ElevenLabs for transcription. Fully optional — local Whisper is recommended." },
+        { label: "Mem0 (optional)", desc: "If you enable memory, task summaries are sent to Mem0's cloud or your self-hosted server. Fully optional." },
+        { label: "Supabase", desc: "Authentication, session management, and optional data sync are handled by Supabase. See supabase.com/privacy." },
+      ],
+    },
+    {
+      title: "Terms of Use",
+      icon: "📄",
+      items: [
+        { label: "Personal use", desc: "Omni is licensed for personal and commercial use. You may not redistribute or resell the software." },
+        { label: "Responsible use", desc: "You are responsible for how you use the agent. Do not use Omni to automate harmful, illegal, or deceptive actions." },
+        { label: "No warranty", desc: "Omni is provided as-is. The developers are not liable for data loss, errors, or unintended actions taken by the AI agent." },
+        { label: "Updates", desc: "By using Omni, you agree to receive software updates that may modify or improve functionality." },
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div className="space-y-1.5">
+        <h1 className="text-4xl font-black text-text tracking-tight">Data and Privacy</h1>
+        <p className="text-text-secondary text-[15.5px]">
+          How Omni handles your data, what it stores, and your rights.
+        </p>
+      </div>
+
+      {sections.map((section) => (
+        <div key={section.title} className="bg-surface border border-border rounded-2xl p-6.5 shadow-lg premium-card">
+          <div className="flex items-center gap-3 mb-5">
+            <span className="text-xl">{section.icon}</span>
+            <h3 className="font-bold text-text text-lg">{section.title}</h3>
+          </div>
+          <div className="space-y-0">
+            {section.items.map((item, i) => (
+              <div
+                key={item.label}
+                className={`py-4 ${i < section.items.length - 1 ? "border-b border-border/40" : ""}`}
+              >
+                <div className="flex items-start justify-between gap-8">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-text mb-0.5">{item.label}</p>
+                    <p className="text-[13px] text-text-secondary leading-relaxed">{item.desc}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Contact */}
+      <div className="bg-surface border border-border rounded-2xl p-6.5 shadow-lg premium-card">
+        <h3 className="font-bold text-text text-lg mb-2">Questions?</h3>
+        <p className="text-[13.5px] text-text-secondary leading-relaxed">
+          If you have questions about your data or want to request deletion, reach out via the GitHub repository or email the developer directly.
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ── Main Settings Page ────────────────────────────────────────────────────────
 
 export const Settings: React.FC = () => {
@@ -785,6 +997,9 @@ export const Settings: React.FC = () => {
 
   // Reasoning mode toggle
   const [reasoningEnabled, setReasoningEnabled] = useState(true);
+
+  // Settings section nav (like Wispr Flow sidebar)
+  const [activeSettingsSection, setActiveSettingsSection] = useState<"general" | "data-privacy">("general");
 
   // System keys
   const [elevenLabsKey, setElevenLabsKey] = useState("");
@@ -1150,6 +1365,8 @@ export const Settings: React.FC = () => {
   };
 
   return (
+    <SettingsLayout activeSection={activeSettingsSection} onSectionChange={setActiveSettingsSection}>
+      {activeSettingsSection === "general" && (
     <div className="space-y-8">
       <div className="space-y-1">
         <h1 className="text-4xl font-black text-text tracking-tight">Settings</h1>
@@ -1766,5 +1983,10 @@ export const Settings: React.FC = () => {
       </AnimatePresence>
 
     </div>
+      )}
+
+      {activeSettingsSection === "data-privacy" && <DataPrivacySection />}
+
+    </SettingsLayout>
   );
 };
