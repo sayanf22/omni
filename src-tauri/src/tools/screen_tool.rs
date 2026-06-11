@@ -20,15 +20,15 @@ async fn vision_ocr(screenshot_b64: &str) -> anyhow::Result<String> {
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),
-            content: "You are a screen-reading assistant. The user will show you a screenshot. \
-                      Describe ALL visible text, UI elements, buttons, labels, menu items, \
-                      input fields, and their approximate positions. Be thorough and literal — \
-                      include every piece of text you can see. Format: list each text item on \
-                      its own line. Do not interpret or summarize — just transcribe everything visible.".to_string(),
+            content: "You are a fast, precise screen reader. Transcribe EVERYTHING visible \
+                      in the screenshot: all text, button labels, menu items, input field \
+                      contents, links, and headings. Output each item on its own line, \
+                      top-to-bottom, left-to-right. Be literal and complete — do not summarize \
+                      or interpret. If you see clickable elements, note them.".to_string(),
         },
         ChatMessage {
             role: "user".to_string(),
-            content: "Read everything visible on this screenshot. List every piece of text and UI element you can see.".to_string(),
+            content: "Transcribe all text and UI elements visible on this screen.".to_string(),
         },
     ];
 
