@@ -12,6 +12,12 @@ export default defineConfig(async () => ({
   plugins: [react()],
   root: projectRoot,
 
+  // Use RELATIVE asset paths in the built index.html (./assets/... instead of /assets/...).
+  // This makes the production bundle bulletproof under Tauri's custom protocol
+  // (http://tauri.localhost on Windows) and avoids any "localhost refused to connect"
+  // / blank-screen issues caused by absolute-path asset resolution.
+  base: "./",
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

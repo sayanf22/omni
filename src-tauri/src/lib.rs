@@ -57,6 +57,61 @@ fn get_current_working_dir() -> String {
         .unwrap_or_else(|_| ".".to_string())
 }
 
+/// PERMANENT FIX for the recurring "localhost refused to connect" / blank-screen bug.
+///
+/// Root cause: when the app is run in dev mode (`tauri dev`) the WebView2 runtime caches
+/// the dev-server app shell (which points at http://localhost:1420) inside
+/// `%LOCALAPPDATA%\com.omni.app\EBWebView`. Because the production install reuses the SAME
+/// data directory (same bundle identifier), WebView2 can serve that stale cached shell and
+/// show "localhost refused to connect". Manually clearing the cache fixes it once, but it
+/// comes back on the next dev run / reinstall.
+///
+/// This routine clears ONLY the HTTP cache, code cache and service-worker store — the things
+/// that hold stale app shells — and ONLY when the installed build version changes. It
+/// deliberately PRESERVES Local Storage / IndexedDB so the user's login session survives.
+/// Net effect: every new install self-heals exactly once, with zero data loss.
+///
+/// Must be called BEFORE the Tauri builder creates any webview window.
+#[cfg(target_os = "windows")]
+fn heal_stale_webview_cache() {
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    // Marker file lives in Roaming AppData so it is not wiped by the cache clear below.
+    let mut marker = match dirs::data_dir() {
+        Some(p) => p,
+        None => return,
+    };
+    marker.push("Omni");
+    let _ = std::fs::create_dir_all(&marker);
+    marker.push(".webview_build");
+
+    // If the marker matches the current build, the cache was already healed for this version.
+    if let Ok(prev) = std::fs::read_to_string(&marker) {
+        if prev.trim() == current_version {
+            return;
+        }
+    }
+
+    // Locate the WebView2 user-data folder: %LOCALAPPDATA%\com.omni.app\EBWebView\Default
+    if let Some(local) = dirs::data_local_dir() {
+        let default_dir = local.join("com.omni.app").join("EBWebView").join("Default");
+        // Only remove caches / service workers — never Local Storage / IndexedDB / cookies.
+        for sub in ["Cache", "Code Cache", "Service Worker", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache"] {
+            let target = default_dir.join(sub);
+            if target.exists() {
+                match std::fs::remove_dir_all(&target) {
+                    Ok(_)  => tracing::info!("[webview-heal] cleared {}", target.display()),
+                    Err(e) => tracing::warn!("[webview-heal] could not clear {}: {}", target.display(), e),
+                }
+            }
+        }
+    }
+
+    // Record that we've healed this build so we don't do it again on every launch.
+    let _ = std::fs::write(&marker, current_version);
+    tracing::info!("[webview-heal] cache healed for build {}", current_version);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize structured logging (tracing subscriber) writing JSON to file in %APPDATA%\Omni\logs\omni.jsonl
@@ -87,6 +142,12 @@ pub fn run() {
 
     tracing::info!("Starting Omni Agent application");
 
+    // PERMANENT FIX: self-heal any stale WebView2 cache left over from dev runs / old installs.
+    // Runs once per build version, before any webview window is created. Prevents the
+    // recurring "localhost refused to connect" blank screen without logging the user out.
+    #[cfg(target_os = "windows")]
+    heal_stale_webview_cache();
+
     // Initialize SQLite database
     if let Err(e) = init_db() {
         tracing::error!("Failed to initialize local SQLite database: {:?}", e);
@@ -99,6 +160,18 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // SINGLE-INSTANCE GUARD (must be the FIRST plugin registered).
+        // Prevents a second launch from spawning a duplicate process that would fight over the
+        // global hotkeys and lock the WebView2 cache. Instead, a second launch just reveals and
+        // focuses the existing main window. This also guarantees the startup cache-heal runs in a
+        // clean single process so it can reliably clear the stale HTTP cache.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new()
