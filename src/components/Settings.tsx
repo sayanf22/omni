@@ -82,14 +82,19 @@ const PROVIDER_DEFAULTS: Record<string, { displayName: string; modelName: string
 
 // Popular OpenAI model suggestions shown as quick-fill chips
 const OPENAI_MODEL_SUGGESTIONS = [
-  { label: "GPT-4.1",       slug: "gpt-4.1",        vision: true  },
-  { label: "GPT-4.1 mini",  slug: "gpt-4.1-mini",   vision: true  },
-  { label: "GPT-4.1 nano",  slug: "gpt-4.1-nano",   vision: true  },
-  { label: "GPT-4o",        slug: "gpt-4o",          vision: true  },
-  { label: "GPT-4o mini",   slug: "gpt-4o-mini",     vision: true  },
-  { label: "o3",            slug: "o3",              vision: false },
-  { label: "o4-mini",       slug: "o4-mini",         vision: false },
-  { label: "o3-mini",       slug: "o3-mini",         vision: false },
+  { label: "GPT-4.1",        slug: "gpt-4.1",        vision: true  },
+  { label: "GPT-4.1 mini",   slug: "gpt-4.1-mini",   vision: true  },
+  { label: "GPT-4.1 nano",   slug: "gpt-4.1-nano",   vision: true  },
+  { label: "GPT-4o",         slug: "gpt-4o",          vision: true  },
+  { label: "GPT-4o mini",    slug: "gpt-4o-mini",     vision: true  },
+  { label: "GPT-5",          slug: "gpt-5",           vision: true  },
+  { label: "GPT-5 mini",     slug: "gpt-5-mini",      vision: true  },
+  { label: "GPT-5 nano",     slug: "gpt-5-nano",      vision: true  },
+  { label: "GPT-5.4 mini",   slug: "gpt-5.4-mini",   vision: true  },
+  { label: "GPT-5.4 nano",   slug: "gpt-5.4-nano",   vision: true  },
+  { label: "o3",             slug: "o3",              vision: false },
+  { label: "o4-mini",        slug: "o4-mini",         vision: false },
+  { label: "o3-mini",        slug: "o3-mini",         vision: false },
 ];
 
 const ModelForm: React.FC<ModelFormProps> = ({
@@ -780,6 +785,8 @@ export const Settings: React.FC = () => {
 
   // System keys
   const [elevenLabsKey, setElevenLabsKey] = useState("");
+  const [elevenLabsMsg, setElevenLabsMsg] = useState<{ text: string; success: boolean } | null>(null);
+  const [elevenLabsSaving, setElevenLabsSaving] = useState(false);
   // Offline voice (Whisper) state
   const [sttStatus, setSttStatus] = useState<{ engine: string; local_whisper_available: boolean; elevenlabs_configured: boolean } | null>(null);
   const [whisperDownloading, setWhisperDownloading] = useState(false);
@@ -796,6 +803,8 @@ export const Settings: React.FC = () => {
   const [mem0Key, setMem0Key]   = useState("");
   const [mem0Type, setMem0Type] = useState<"cloud" | "self-hosted">("cloud");
   const [mem0Url, setMem0Url]   = useState("https://api.mem0.ai");
+  const [mem0Msg, setMem0Msg]   = useState<{ text: string; success: boolean } | null>(null);
+  const [mem0Testing, setMem0Testing] = useState(false);
 
   // Hotkeys
   const [micHotkey, setMicHotkey]   = useState("Ctrl+Shift+A");
@@ -854,16 +863,29 @@ export const Settings: React.FC = () => {
 
   const handleSaveElevenLabs = async () => {
     const key = elevenLabsKey.trim();
-    if (!key || key.includes("•")) { alert("Enter a valid ElevenLabs API key."); return; }
+    if (!key || key.includes("•")) {
+      setElevenLabsMsg({ text: "Enter a valid ElevenLabs API key first.", success: false });
+      return;
+    }
+    setElevenLabsSaving(true);
+    setElevenLabsMsg(null);
     try {
-      // Test the key before saving (GET /v1/user with the key).
       const ok = await invoke<boolean>("test_elevenlabs_key", { apiKey: key }).catch(() => false);
-      if (!ok) { alert("That ElevenLabs key didn't work. Double-check it and try again."); return; }
+      if (!ok) {
+        setElevenLabsMsg({ text: "Key didn't work — double-check it and try again.", success: false });
+        setElevenLabsSaving(false);
+        return;
+      }
       await invoke("save_api_key", { name: "elevenlabs", value: key });
       await invoke("save_setting", { key: "tts_engine", value: "cloud" });
-      alert("ElevenLabs key verified and saved.");
+      setElevenLabsMsg({ text: "✓ ElevenLabs key verified and saved.", success: true });
+      setTimeout(() => setElevenLabsMsg(null), 4000);
       refreshSttStatus();
-    } catch (e: any) { alert("Failed: " + e); }
+    } catch (e: any) {
+      setElevenLabsMsg({ text: `Failed: ${e?.toString() || e}`, success: false });
+    } finally {
+      setElevenLabsSaving(false);
+    }
   };
 
   // ── Offline voice (Whisper) ────────────────────────────────────────────────
@@ -957,11 +979,32 @@ export const Settings: React.FC = () => {
 
   const handleSaveMem0 = async () => {
     try {
-      if (!mem0Key.includes("•")) await invoke("save_api_key", { name: "mem0", value: mem0Key });
+      if (mem0Key && !mem0Key.includes("•")) await invoke("save_api_key", { name: "mem0", value: mem0Key });
       await invoke("save_setting", { key: "mem0_type", value: mem0Type });
       await invoke("save_setting", { key: "mem0_url",  value: mem0Url });
-      alert("Mem0 config saved.");
-    } catch (e: any) { alert("Failed: " + e); }
+      setMem0Msg({ text: "✓ Mem0 config saved.", success: true });
+      setTimeout(() => setMem0Msg(null), 4000);
+    } catch (e: any) {
+      setMem0Msg({ text: `Failed to save: ${e?.toString() || e}`, success: false });
+    }
+  };
+
+  const handleTestMem0 = async () => {
+    setMem0Testing(true);
+    setMem0Msg(null);
+    try {
+      const url = mem0Url.replace(/\/$/, "");
+      const resp = await fetch(`${url}/health`);
+      if (resp.ok) {
+        setMem0Msg({ text: `✓ Connected to Mem0 at ${url}`, success: true });
+      } else {
+        setMem0Msg({ text: `Server responded with status ${resp.status}. Check the URL.`, success: false });
+      }
+    } catch {
+      setMem0Msg({ text: `Could not reach ${mem0Url} — make sure Mem0 is running.`, success: false });
+    } finally {
+      setMem0Testing(false);
+    }
   };
 
   const handleSaveProjectDir = async () => {
@@ -1416,58 +1459,148 @@ export const Settings: React.FC = () => {
         <div className="p-5 bg-surface2 border border-border rounded-2xl space-y-4">
           <div>
             <h4 className="text-base font-bold text-text">ElevenLabs Voice (optional, cloud)</h4>
-            <p className="text-sm text-text-secondary mt-1 leading-relaxed">Optional cloud speech-to-text + natural voice output. The key is tested before saving. Local Whisper above is recommended (offline, free).</p>
+            <p className="text-sm text-text-secondary mt-1 leading-relaxed">Optional cloud speech-to-text + natural voice output. Key is tested before saving. Local Whisper above is recommended (offline, free).</p>
           </div>
+          {elevenLabsMsg && (
+            <div className={`flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-bold border ${
+              elevenLabsMsg.success
+                ? "bg-success/10 border-success/20 text-success"
+                : "bg-error-dim/20 border-error/25 text-error"
+            }`}>
+              {elevenLabsMsg.success ? <Check className="w-4 h-4 shrink-0" /> : <XCircle className="w-4 h-4 shrink-0" />}
+              {elevenLabsMsg.text}
+            </div>
+          )}
           <div className="flex gap-4">
             <input
               type="password" value={elevenLabsKey}
-              onChange={(e) => setElevenLabsKey(e.target.value)}
+              onChange={(e) => { setElevenLabsKey(e.target.value); setElevenLabsMsg(null); }}
               placeholder="ElevenLabs API key"
               className="flex-1 px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono"
             />
-            <button onClick={handleSaveElevenLabs}
-              className="px-5 py-3 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-black rounded-xl transition-colors shrink-0 accent-glow">
-              Test &amp; Save
+            <button
+              onClick={handleSaveElevenLabs}
+              disabled={elevenLabsSaving}
+              className="px-5 py-3 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-black rounded-xl transition-colors shrink-0 accent-glow disabled:opacity-50 flex items-center gap-2"
+            >
+              {elevenLabsSaving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Verifying…</> : "Test & Save"}
             </button>
           </div>
         </div>
 
         {/* Mem0 */}
         <div className="p-5 bg-surface2 border border-border rounded-2xl space-y-4">
-          <div className="flex items-center justify-between gap-4">
+          {/* Header row */}
+          <div className="flex items-start justify-between gap-4">
             <div>
               <h4 className="text-base font-bold text-text">Mem0 Memory</h4>
-              <p className="text-sm text-text-secondary mt-1 leading-relaxed">Persistent user facts that improve every task. Optional.</p>
+              <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+                Persistent user facts that improve every task. Optional cloud or self-hosted.
+              </p>
             </div>
-            <div className="flex gap-2">
-              {["cloud", "self-hosted"].map((t) => (
+            <div className="flex gap-2 shrink-0">
+              {(["cloud", "self-hosted"] as const).map((t) => (
                 <button key={t} type="button"
-                  onClick={() => { setMem0Type(t as any); if (t === "cloud") setMem0Url("https://api.mem0.ai"); else if (mem0Url === "https://api.mem0.ai") setMem0Url("http://localhost:8000"); }}
+                  onClick={() => {
+                    setMem0Type(t);
+                    setMem0Msg(null);
+                    if (t === "cloud") setMem0Url("https://api.mem0.ai");
+                    else if (mem0Url === "https://api.mem0.ai") setMem0Url("http://localhost:8000");
+                  }}
                   className={`px-3.5 py-2 text-xs font-black uppercase rounded-xl border transition-colors ${
-                    mem0Type === t ? "bg-accent border-accent text-accent-contrast" : "bg-surface3 border-border text-text hover:text-text"
+                    mem0Type === t
+                      ? "bg-accent border-accent text-accent-contrast"
+                      : "bg-surface3 border-border text-text hover:border-border-light"
                   }`}>
                   {t === "cloud" ? "Cloud" : "Self-hosted"}
                 </button>
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[11.5px] font-black text-text-secondary uppercase tracking-wider mb-1.5">API Key</label>
-              <input type="password" value={mem0Key} onChange={(e) => setMem0Key(e.target.value)}
-                placeholder={mem0Type === "cloud" ? "Required for cloud" : "Optional"}
-                className="w-full px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono" />
+
+          {/* Inline status message */}
+          {mem0Msg && (
+            <div className={`flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-bold border ${
+              mem0Msg.success
+                ? "bg-success/10 border-success/20 text-success"
+                : "bg-error-dim/20 border-error/25 text-error"
+            }`}>
+              {mem0Msg.success
+                ? <Check className="w-4 h-4 shrink-0" />
+                : <XCircle className="w-4 h-4 shrink-0" />}
+              {mem0Msg.text}
             </div>
+          )}
+
+          {/* Cloud mode: only API key */}
+          {mem0Type === "cloud" && (
             <div>
-              <label className="block text-[11.5px] font-black text-text-secondary uppercase tracking-wider mb-1.5">Base URL</label>
-              <input type="text" value={mem0Url} disabled={mem0Type === "cloud"} onChange={(e) => setMem0Url(e.target.value)}
-                placeholder="http://localhost:8000"
-                className="w-full px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono disabled:opacity-50" />
+              <label className="block text-[11.5px] font-black text-text-secondary uppercase tracking-wider mb-1.5">
+                Mem0 API Key
+              </label>
+              <input
+                type="password"
+                value={mem0Key}
+                onChange={(e) => setMem0Key(e.target.value)}
+                placeholder="Required for cloud — get from app.mem0.ai"
+                className="w-full px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono"
+              />
+              <p className="text-xs text-text-muted mt-1.5">
+                Get your key at <span className="font-mono text-accent">app.mem0.ai</span> → Settings → API Keys
+              </p>
             </div>
-          </div>
-          <div className="flex justify-end">
-            <button onClick={handleSaveMem0}
-              className="px-5 py-3 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-black rounded-xl transition-colors accent-glow">
+          )}
+
+          {/* Self-hosted mode: URL + optional key + test */}
+          {mem0Type === "self-hosted" && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[11.5px] font-black text-text-secondary uppercase tracking-wider mb-1.5">
+                  Server URL
+                </label>
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    value={mem0Url}
+                    onChange={(e) => { setMem0Url(e.target.value); setMem0Msg(null); }}
+                    placeholder="http://localhost:8000"
+                    className="flex-1 px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestMem0}
+                    disabled={mem0Testing}
+                    className="px-5 py-3 bg-surface border border-border hover:border-border-light text-text text-xs font-black rounded-xl transition-colors shrink-0 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {mem0Testing
+                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin text-accent" /> Testing…</>
+                      : <><RefreshCw className="w-3.5 h-3.5" /> Test</>}
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted mt-1.5">
+                  Default: <span className="font-mono">http://localhost:8000</span> — the port Omni's bundled Mem0 server runs on.
+                </p>
+              </div>
+              <div>
+                <label className="block text-[11.5px] font-black text-text-secondary uppercase tracking-wider mb-1.5">
+                  API Key <span className="text-text-muted normal-case font-normal">(optional for self-hosted)</span>
+                </label>
+                <input
+                  type="password"
+                  value={mem0Key}
+                  onChange={(e) => setMem0Key(e.target.value)}
+                  placeholder="Leave blank if your server has no auth"
+                  className="w-full px-4 py-3 bg-surface3 border border-border rounded-xl text-text text-sm focus:outline-none focus:border-accent font-mono"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={handleSaveMem0}
+              className="px-5 py-3 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-black rounded-xl transition-colors accent-glow"
+            >
               Save Mem0 Config
             </button>
           </div>

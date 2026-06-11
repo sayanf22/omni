@@ -77,15 +77,17 @@ fn openai_needs_completion_tokens(name: &str) -> bool {
 ///   - o1, o1-mini, o1-pro
 ///   - o3, o3-mini, o3-pro
 ///   - o4, o4-mini
+///   - gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.1, gpt-5.2, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
 fn openai_no_temperature(name: &str) -> bool {
     name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+        || name.contains("gpt-5")
 }
 
-/// Returns true for OpenAI models that do NOT accept `response_format`.
-/// This currently includes all o-series reasoning models.
+/// Returns true for OpenAI models that do NOT accept `response_format: json_object`.
+/// This includes all o-series reasoning models and gpt-5 series.
 fn openai_no_response_format(name: &str) -> bool {
-    // o-series models do not support response_format: json_object
     name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4")
+        || name.contains("gpt-5")
 }
 
 fn supports_vision(model: &CustomModel) -> bool {
