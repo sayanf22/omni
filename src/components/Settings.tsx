@@ -783,6 +783,9 @@ export const Settings: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [editModel, setEditModel] = useState<CustomModel | undefined>();
 
+  // Reasoning mode toggle
+  const [reasoningEnabled, setReasoningEnabled] = useState(true);
+
   // System keys
   const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [elevenLabsMsg, setElevenLabsMsg] = useState<{ text: string; success: boolean } | null>(null);
@@ -837,6 +840,10 @@ export const Settings: React.FC = () => {
         if (projDir) setActiveProjectDir(projDir);
         const defDir = await invoke<string>("get_current_working_dir");
         if (defDir) setDefaultProjectDir(defDir);
+
+        // Reasoning toggle
+        const rEnabled = await invoke<string | null>("get_setting", { key: "reasoning_enabled" });
+        if (rEnabled === "false") setReasoningEnabled(false);
       } catch (e) { console.error(e); }
     })();
 
@@ -1168,6 +1175,37 @@ export const Settings: React.FC = () => {
               <Plus className="w-4.5 h-4.5" /> Add Model
             </button>
           )}
+        </div>
+
+        {/* ── Reasoning mode toggle ─────────────────────────────────── */}
+        <div
+          onClick={async () => {
+            const next = !reasoningEnabled;
+            setReasoningEnabled(next);
+            await invoke("save_setting", { key: "reasoning_enabled", value: next ? "true" : "false" });
+          }}
+          className={`flex items-center justify-between p-4.5 rounded-2xl border cursor-pointer transition-all select-none ${
+            reasoningEnabled
+              ? "bg-purple-500/10 border-purple-500/25"
+              : "bg-surface3 border-border hover:border-border-light"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <Brain className={`w-5 h-5 shrink-0 ${reasoningEnabled ? "text-purple-400" : "text-text-muted"}`} />
+            <div>
+              <p className={`text-sm font-bold ${reasoningEnabled ? "text-text" : "text-text-secondary"}`}>
+                {reasoningEnabled ? "Reasoning mode ON — precise, slower" : "Reasoning mode OFF — fast, direct"}
+              </p>
+              <p className="text-xs text-text-muted leading-snug mt-0.5">
+                {reasoningEnabled
+                  ? "Agent uses reasoning models (o3, o4, Claude thinking) for analytical tasks. More thorough but takes longer."
+                  : "Agent always uses your primary model — faster responses. Disable for quick everyday tasks."}
+              </p>
+            </div>
+          </div>
+          <div className={`w-11 h-6 rounded-full transition-colors shrink-0 relative ${reasoningEnabled ? "bg-purple-500" : "bg-surface3 border border-border"}`}>
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${reasoningEnabled ? "left-6" : "left-1"}`} />
+          </div>
         </div>
 
         {showForm && (

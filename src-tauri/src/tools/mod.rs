@@ -24,6 +24,7 @@ pub mod screen_tool;
 pub mod app_tool;
 pub mod file_tool;
 pub mod clipboard_tool;
+pub mod web_tool;
 
 pub fn get_all_tools() -> HashMap<String, Box<dyn Tool>> {
     let mut map: HashMap<String, Box<dyn Tool>> = HashMap::new();
@@ -33,5 +34,6 @@ pub fn get_all_tools() -> HashMap<String, Box<dyn Tool>> {
     map.insert("app".to_string(), Box::new(app_tool::AppTool::new()));
     map.insert("file".to_string(), Box::new(file_tool::FileTool::new()));
     map.insert("clipboard".to_string(), Box::new(clipboard_tool::ClipboardTool::new()));
+    map.insert("web".to_string(), Box::new(web_tool::WebTool::new()));
     map
 }

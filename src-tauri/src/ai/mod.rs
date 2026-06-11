@@ -234,11 +234,26 @@ pub async fn call_ai_chat(
         }
     }
 
-    let role = task_type.role();
+    // ── Reasoning override ────────────────────────────────────────────────────
+    // If the user has toggled reasoning OFF ("reasoning_enabled" = "false"),
+    // downgrade any Reasoning task type to Vision so we use the standard model
+    // and skip the reasoning-model routing entirely. This makes responses faster.
+    let reasoning_on = get_setting_internal("reasoning_enabled")
+        .unwrap_or(None)
+        .map(|v| v != "false")
+        .unwrap_or(true); // default: reasoning enabled
+
+    let effective_task_type = if !reasoning_on && task_type == TaskType::Reasoning {
+        TaskType::Vision  // fallback to primary model, skip reasoning model routing
+    } else {
+        task_type
+    };
+
+    let role = effective_task_type.role();
 
     // 1. Resolve the active model using capability-aware routing
     //    (reasoning models for analytical tasks, role models otherwise).
-    let selected_model = resolve_active_model(task_type)?;
+    let selected_model = resolve_active_model(effective_task_type)?;
 
     let model = selected_model.ok_or_else(|| {
         anyhow::anyhow!("No active model configured for role '{}' or fallback. Please configure at least one active model in Settings.", role)
