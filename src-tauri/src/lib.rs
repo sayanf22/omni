@@ -30,7 +30,7 @@ use storage::supabase::{
 use security::permissions::{approve_request, answer_question};
 use agent::planner::{run_task, cancel_task, get_live_state};
 use agent::sidecar::SidecarState;
-use ai::test_model_connection;
+use ai::{test_model_connection, test_stored_model};
 use ai::client::{probe_model_vision, probe_model_audio, probe_model_video, detect_model_reasoning};
 use ai::memory::{get_all_memories, delete_memory_item, search_memory_items, add_custom_memory_item};
 use commands::{trigger_mic_start, trigger_mic_stop, trigger_tts_speak};
@@ -47,6 +47,14 @@ use tauri::WindowEvent;
 #[tauri::command]
 fn get_sidecar_status(state: tauri::State<SidecarState>) -> bool {
     *state.running.lock().unwrap()
+}
+
+/// Returns the current working directory of the application process.
+#[tauri::command]
+fn get_current_working_dir() -> String {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -158,18 +166,54 @@ pub fn run() {
                 if let Ok(monitor) = overlay.primary_monitor() {
                     if let Some(monitor) = monitor {
                         let screen_w = monitor.size().width as i32;
-                        // Account for scaling factor — set_position uses logical pixels
                         let scale = monitor.scale_factor();
                         let logical_screen_w = (screen_w as f64 / scale) as i32;
-                        let overlay_w = 360_i32; // window width (340) + 20px right margin
-                        let x = logical_screen_w - overlay_w;
-                        let y = 20_i32;
+                        // Position 40px from the right edge, 40px from top (avoids taskbar/system chrome)
+                        let overlay_w = 400_i32;
+                        let margin_right = 20_i32;
+                        let margin_top = 40_i32;
+                        let x = logical_screen_w - overlay_w - margin_right;
+                        let y = margin_top;
                         let _ = overlay.set_position(tauri::LogicalPosition::new(x, y));
                     }
+                }
+                // Apply native Windows Acrylic blur effect to the overlay window.
+                // This composites the translucent card glass over the real desktop below.
+                #[cfg(target_os = "windows")]
+                {
+                    use tauri::window::{Effect, EffectState, EffectsBuilder};
+                    let _ = overlay.set_effects(
+                        EffectsBuilder::new()
+                            .effect(Effect::Acrylic)
+                            .state(EffectState::Active)
+                            .build(),
+                    );
+                }
+            }
+
+            // Apply native Acrylic to the text input overlay too
+            if let Some(textinput) = app.get_webview_window("textinput") {
+                #[cfg(target_os = "windows")]
+                {
+                    use tauri::window::{Effect, EffectState, EffectsBuilder};
+                    let _ = textinput.set_effects(
+                        EffectsBuilder::new()
+                            .effect(Effect::Acrylic)
+                            .state(EffectState::Active)
+                            .build(),
+                    );
                 }
             }
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -216,6 +260,7 @@ pub fn run() {
             cancel_task,
             get_live_state,
             test_model_connection,
+            test_stored_model,
             probe_model_vision,
             trigger_mic_start,
             trigger_mic_stop,
@@ -231,6 +276,7 @@ pub fn run() {
             search_memory_items,
             add_custom_memory_item,
             get_sidecar_status,
+            get_current_working_dir,
             supabase_login,
             supabase_signup,
             supabase_login_with_otp,
@@ -239,7 +285,6 @@ pub fn run() {
             sync_local_to_cloud,
             set_hotkey,
             get_hotkeys,
-            probe_model_vision,
             probe_model_audio,
             probe_model_video,
             detect_model_reasoning,

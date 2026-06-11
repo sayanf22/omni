@@ -7,7 +7,6 @@ import { Login } from "./components/Login";
 import { Onboarding } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
 import { FloatingOverlay } from "./components/FloatingOverlay";
-import { TextInputOverlay } from "./components/TextInputOverlay";
 import { VoicePill } from "./components/VoicePill";
 
 function App() {
@@ -28,7 +27,6 @@ function App() {
       .then((user) => {
         if (user) {
           setSession({ user });
-          fetchLocalData();
         } else {
           setSession(null);
         }
@@ -39,16 +37,18 @@ function App() {
         setSession(null);
         setAuthLoading(false);
       });
-  }, [setSession, fetchLocalData]);
+  }, [setSession]);
+
+  // Fetch local database data (models, tasks, audits) when session becomes active
+  useEffect(() => {
+    if (session) {
+      fetchLocalData();
+    }
+  }, [session, fetchLocalData]);
 
   // If in the overlay window, load FloatingOverlay directly
   if (windowLabel === "overlay") {
     return <FloatingOverlay />;
-  }
-
-  // If in the text input window, load TextInputOverlay directly
-  if (windowLabel === "textinput") {
-    return <TextInputOverlay />;
   }
 
   // Handle loading state

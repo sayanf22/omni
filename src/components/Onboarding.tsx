@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield, Check, ChevronRight, ChevronLeft,
-  Loader2, Sparkles, Zap, Lock, Brain
+  Loader2, Sparkles, Zap, Lock, Brain, Sun, Moon
 } from "lucide-react";
 
 interface OnboardingProps {
@@ -71,6 +71,9 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
   // Auto-detect reasoning from model name
   const [isReasoningModel, setIsReasoningModel] = useState<boolean | null>(null);
+  const theme          = useStore((s) => s.theme);
+  const toggleTheme    = useStore((s) => s.toggleTheme);
+  
   React.useEffect(() => {
     if (!modelName.trim()) { setIsReasoningModel(null); return; }
     invoke<boolean>("detect_model_reasoning", { providerType: provider, modelName: modelName.trim() })
@@ -187,49 +190,43 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const trans = { duration: 0.22, ease: [0.4, 0, 0.2, 1] };
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center p-4"
-      style={{ background: "#050507" }}
-    >
+    <div className="min-h-screen bg-bg flex items-center justify-center p-4 transition-colors duration-200">
       {/* Outer card */}
-      <div
-        className="w-full max-w-lg"
-        style={{
-          background: "#111113",
-          border: "1px solid #232327",
-          borderRadius: "24px",
-          boxShadow: "0 32px 100px rgba(0,0,0,0.7), 0 8px 32px rgba(0,0,0,0.4)",
-          overflow: "hidden",
-        }}
-      >
+      <div className="w-full max-w-lg bg-surface border border-border rounded-xl shadow-2xl overflow-hidden transition-colors duration-200">
         {/* Header */}
-        <div
-          style={{
-            padding: "20px 28px 16px",
-            borderBottom: "1px solid #1e1e22",
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.10)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
+        <div className="px-7 py-5 border-b border-border/60 flex items-center justify-between transition-colors duration-200">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-surface2 border border-border flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-text" />
             </div>
-            <span style={{ color: "#f4f4f5", fontSize: 14, fontWeight: 700 }}>Omni Setup Wizard</span>
+            <span className="text-text text-sm font-extrabold">Omni Setup Wizard</span>
           </div>
-          {/* Step dots */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {[1,2,3,4].map((s) => (
-              <div key={s} style={{
-                height: 5, borderRadius: 99,
-                background: s === step ? "#fff" : s < step ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.1)",
-                width: s === step ? 24 : 10,
-                transition: "all 0.3s cubic-bezier(0.4,0,0.2,1)",
-              }} />
-            ))}
+          
+          <div className="flex items-center gap-4">
+            {/* Step dots */}
+            <div className="flex gap-1.5 items-center">
+              {[1, 2, 3, 4].map((s) => (
+                <div
+                  key={s}
+                  className={`h-1.5 rounded-full transition-all duration-300 ${
+                    s === step
+                      ? "bg-text w-5"
+                      : s < step
+                      ? "bg-text/40 w-1.5"
+                      : "bg-text/15 w-1.5"
+                  }`}
+                />
+              ))}
+            </div>
+
+            {/* Theme Toggle Button */}
+            <button
+              onClick={toggleTheme}
+              className="p-1.5 rounded-lg bg-surface border border-border text-text-secondary hover:text-text hover:bg-surface2 transition-all shadow-sm shrink-0"
+              title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {theme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            </button>
           </div>
         </div>
 
@@ -242,24 +239,20 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 style={{ position: "absolute", inset: 0, padding: "28px 28px 0" }}
                 className="space-y-4 overflow-y-auto"
               >
-                <h2 style={{ color: "#f4f4f5", fontSize: 22, fontWeight: 800 }}>Welcome to Omni Agent</h2>
-                <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.7 }}>
+                <h2 className="text-text text-xl font-extrabold mb-2">Welcome to Omni Agent</h2>
+                <p className="text-text-secondary text-xs leading-relaxed">
                   Omni is your Windows desktop AI agent. It controls your PC like a human — opening apps, typing text, clicking buttons, and automating any workflow you describe.
                 </p>
-                <div style={{ background: "#1a1a1d", border: "1px solid #2e2e34", borderRadius: 14, padding: "16px 18px" }} className="space-y-3">
-                  <p style={{ color: "#71717A", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>How it works</p>
+                <div className="bg-surface2 border border-border/80 rounded-xl p-4.5 space-y-3">
+                  <p className="text-text-muted text-[10px] font-extrabold uppercase tracking-wider">How it works</p>
                   {[
                     { k: "Ctrl+Shift+A", v: "Hold to speak a command, release to execute" },
                     { k: "Ctrl+Shift+T", v: "Type a command in the floating bar" },
                     { k: "Esc × 2", v: "Emergency stop — kills all running tasks" },
                   ].map((row) => (
-                    <div key={row.k} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <kbd style={{
-                        background: "#232327", border: "1px solid #3a3a40", borderRadius: 7,
-                        padding: "3px 8px", fontSize: 11, color: "#f4f4f5", fontFamily: "monospace",
-                        whiteSpace: "nowrap", flexShrink: 0,
-                      }}>{row.k}</kbd>
-                      <span style={{ color: "#a1a1aa", fontSize: 12 }}>{row.v}</span>
+                    <div key={row.k} className="flex items-center gap-3">
+                      <kbd className="bg-surface3 border border-border px-2 py-0.5 rounded-md text-text text-[11px] font-mono font-bold whitespace-nowrap shrink-0">{row.k}</kbd>
+                      <span className="text-text-secondary text-[12px]">{row.v}</span>
                     </div>
                   ))}
                 </div>
@@ -272,8 +265,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 style={{ position: "absolute", inset: 0, padding: "28px 28px 0" }}
                 className="space-y-4 overflow-y-auto"
               >
-                <h2 style={{ color: "#f4f4f5", fontSize: 22, fontWeight: 800 }}>System Permissions</h2>
-                <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.7 }}>
+                <h2 className="text-text text-xl font-extrabold mb-2">System Permissions</h2>
+                <p className="text-text-secondary text-xs leading-relaxed">
                   Omni needs standard Windows access to see the screen and simulate inputs. No elevated permissions required.
                 </p>
                 <div className="space-y-2">
@@ -282,15 +275,11 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     { icon: <Shield className="w-4 h-4 text-success" />, title: "Input simulation (enigo)", desc: "Mouse clicks and keyboard typing" },
                     { icon: <Zap className="w-4 h-4 text-warning" />, title: "Approval gate", desc: "Destructive actions ask for your OK first" },
                   ].map((item) => (
-                    <div key={item.title} style={{
-                      background: "#1a1a1d", border: "1px solid #2e2e34",
-                      borderRadius: 12, padding: "12px 16px",
-                      display: "flex", alignItems: "flex-start", gap: 12,
-                    }}>
-                      <div style={{ marginTop: 1, flexShrink: 0 }}>{item.icon}</div>
+                    <div key={item.title} className="bg-surface2 border border-border/80 rounded-xl p-3 flex items-start gap-3">
+                      <div className="mt-0.5 flex-shrink-0">{item.icon}</div>
                       <div>
-                        <p style={{ color: "#f4f4f5", fontSize: 13, fontWeight: 600 }}>{item.title}</p>
-                        <p style={{ color: "#71717A", fontSize: 11, marginTop: 2 }}>{item.desc}</p>
+                        <p className="text-text text-[13px] font-semibold">{item.title}</p>
+                        <p className="text-text-secondary text-[11px] mt-0.5">{item.desc}</p>
                       </div>
                     </div>
                   ))}
@@ -304,24 +293,20 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 style={{ position: "absolute", inset: 0, padding: "28px 28px 0" }}
                 className="overflow-y-auto"
               >
-                <h2 style={{ color: "#f4f4f5", fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Connect AI Model</h2>
-                <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>
+                <h2 className="text-text text-xl font-extrabold mb-1">Connect AI Model</h2>
+                <p className="text-text-secondary text-xs leading-relaxed mb-3">
                   Add your AI provider key to get started.
                 </p>
 
                 {/* ── Security notice ── */}
-                <div style={{
-                  display: "flex", alignItems: "flex-start", gap: 10,
-                  background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)",
-                  borderRadius: 12, padding: "10px 14px", marginBottom: 14,
-                }}>
-                  <Lock style={{ width: 14, height: 14, color: "#10b981", flexShrink: 0, marginTop: 1 }} />
+                <div className="flex items-start gap-3 bg-success/8 border border-success/20 rounded-xl p-3 mb-3.5">
+                  <Lock className="w-3.5 h-3.5 text-success flex-shrink-0 mt-0.5" />
                   <div>
-                    <p style={{ color: "#10b981", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>
+                    <p className="text-success text-[11px] font-extrabold mb-0.5">
                       Your API keys are private and stay on your device
                     </p>
-                    <p style={{ color: "#6b7280", fontSize: 11, lineHeight: 1.6 }}>
-                      Keys are stored in <strong style={{ color: "#9ca3af" }}>Windows Credential Manager</strong> (DPAPI-encrypted).
+                    <p className="text-text-secondary text-[11px] leading-relaxed">
+                      Keys are stored in <strong className="text-text">Windows Credential Manager</strong> (DPAPI-encrypted).
                       They are never sent to Omni servers, never logged, and never leave your PC.
                       Only the AI provider you choose receives them.
                     </p>
@@ -329,20 +314,16 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 </div>
 
                 {/* Provider tabs */}
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                <div className="flex gap-1.5 flex-wrap mb-3.5">
                   {PROVIDERS.map((p) => (
                     <button
                       key={p.id} type="button"
                       onClick={() => handleProviderChange(p.id)}
-                      style={{
-                        padding: "7px 14px",
-                        borderRadius: 10,
-                        border: `1px solid ${provider === p.id ? "rgba(255,255,255,0.9)" : "#2e2e34"}`,
-                        background: provider === p.id ? "#fff" : "#1a1a1d",
-                        color: provider === p.id ? "#09090B" : "#a1a1aa",
-                        fontSize: 12, fontWeight: 700,
-                        cursor: "pointer", transition: "all 0.15s",
-                      }}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                        provider === p.id
+                          ? "bg-accent border-accent-hover text-accent-contrast shadow-sm"
+                          : "bg-surface2 border-border/60 text-text-secondary hover:text-text hover:bg-surface3"
+                      }`}
                     >
                       {p.label}
                     </button>
@@ -351,24 +332,19 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
                 {/* Input fields */}
                 <div className="space-y-3 mb-3">
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div className="grid grid-cols-2 gap-2.5">
                     {[
                       { label: "Display Name", val: displayName, set: setDisplayName, ph: "My GPT-4o" },
                       { label: "Model ID", val: modelName, set: setModelName, ph: "gpt-4o-mini", mono: true },
                     ].map((f) => (
                       <div key={f.label}>
-                        <label style={{ display: "block", color: "#52525B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>{f.label}</label>
+                        <label className="block text-text-muted text-[10px] font-extrabold uppercase tracking-wider mb-1">{f.label}</label>
                         <input
                           value={f.val} onChange={(e) => f.set(e.target.value)}
                           placeholder={f.ph}
-                          style={{
-                            width: "100%", background: "#1a1a1d", border: "1px solid #2e2e34",
-                            borderRadius: 10, padding: "9px 12px", color: "#f4f4f5",
-                            fontSize: f.mono ? 12 : 13, fontFamily: f.mono ? "monospace" : "inherit",
-                            outline: "none", boxSizing: "border-box",
-                          }}
-                          onFocus={(e) => { e.target.style.borderColor = "#5a5a6a"; }}
-                          onBlur={(e) => { e.target.style.borderColor = "#2e2e34"; }}
+                          className={`w-full bg-surface2 border border-border/80 rounded-lg px-3 py-2 text-text text-sm outline-none focus:border-text-secondary transition-all ${
+                            f.mono ? "font-mono text-xs" : ""
+                          }`}
                         />
                       </div>
                     ))}
@@ -376,29 +352,26 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
                   {provider === "custom" && (
                     <div>
-                      <label style={{ display: "block", color: "#52525B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Base URL</label>
+                      <label className="block text-text-muted text-[10px] font-extrabold uppercase tracking-wider mb-1">Base URL</label>
                       <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
                         placeholder="http://localhost:1234/v1"
-                        style={{ width: "100%", background: "#1a1a1d", border: "1px solid #2e2e34", borderRadius: 10, padding: "9px 12px", color: "#f4f4f5", fontSize: 12, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }}
-                        onFocus={(e) => { e.target.style.borderColor = "#5a5a6a"; }}
-                        onBlur={(e) => { e.target.style.borderColor = "#2e2e34"; }}
+                        className="w-full bg-surface2 border border-border/80 rounded-lg px-3 py-2 text-text text-xs font-mono outline-none focus:border-text-secondary transition-all"
                       />
                     </div>
                   )}
 
                   {/* Reasoning auto-detect badge */}
                   {isReasoningModel !== null && modelName.trim() && (
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 8,
-                      background: isReasoningModel ? "rgba(168,85,247,0.1)" : "#1a1a1d",
-                      border: `1px solid ${isReasoningModel ? "rgba(168,85,247,0.3)" : "#2e2e34"}`,
-                      borderRadius: 10, padding: "8px 12px",
-                    }}>
+                    <div className={`flex items-center gap-3 border rounded-xl p-3 ${
+                      isReasoningModel
+                        ? "bg-purple-500/8 border-purple-500/20 text-purple-400"
+                        : "bg-surface2 border-border/80 text-text-secondary"
+                    }`}>
                       {isReasoningModel
-                        ? <Brain style={{ width: 13, height: 13, color: "#c084fc", flexShrink: 0 }} />
-                        : <Zap style={{ width: 13, height: 13, color: "#6b7280", flexShrink: 0 }} />
+                        ? <Brain className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+                        : <Zap className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
                       }
-                      <p style={{ color: isReasoningModel ? "#c084fc" : "#71717A", fontSize: 11, lineHeight: 1.4 }}>
+                      <p className="text-[11px] leading-relaxed">
                         {isReasoningModel
                           ? "Reasoning model detected — Omni will auto-route analytical tasks (analyze, solve, compare…) to this model."
                           : "Standard model — handles everyday tasks (browse, write, code, automate)."}
@@ -407,12 +380,10 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                   )}
 
                   <div>
-                    <label style={{ display: "block", color: "#52525B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>API Key</label>
+                    <label className="block text-text-muted text-[10px] font-extrabold uppercase tracking-wider mb-1">API Key</label>
                     <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
                       placeholder="sk-… or your provider key"
-                      style={{ width: "100%", background: "#1a1a1d", border: "1px solid #2e2e34", borderRadius: 10, padding: "9px 12px", color: "#f4f4f5", fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }}
-                      onFocus={(e) => { e.target.style.borderColor = "#5a5a6a"; }}
-                      onBlur={(e) => { e.target.style.borderColor = "#2e2e34"; }}
+                      className="w-full bg-surface2 border border-border/80 rounded-lg px-3 py-2 text-text text-sm font-mono outline-none focus:border-text-secondary transition-all"
                     />
                   </div>
                 </div>
@@ -420,15 +391,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 {/* Test button */}
                 <button type="button" onClick={handleTest}
                   disabled={testing || !apiKey.trim()}
-                  style={{
-                    width: "100%", padding: "10px", background: "#1e1e22",
-                    border: "1px solid #2e2e34", borderRadius: 10,
-                    color: testing ? "#71717A" : "#f4f4f5",
-                    fontSize: 13, fontWeight: 600, cursor: "pointer",
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                    opacity: !apiKey.trim() ? 0.4 : 1,
-                    marginBottom: 10,
-                  }}
+                  className="w-full py-2.5 bg-surface2 hover:bg-surface3 border border-border rounded-lg text-text text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40 mb-2.5"
                 >
                   {testing
                     ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Testing capabilities…</>
@@ -438,8 +401,8 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
                 {/* Capability results — only after test */}
                 {tested && (
-                  <div style={{ background: "#141416", border: "1px solid #2e2e34", borderRadius: 12, padding: "10px 14px", marginBottom: 8 }}>
-                    <p style={{ color: "#52525B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Detected Capabilities</p>
+                  <div className="bg-surface2 border border-border/80 rounded-xl p-3.5 mb-2">
+                    <p className="text-text-muted text-[10px] font-extrabold uppercase tracking-wider mb-1.5">Detected Capabilities</p>
                     <CapRow label="Text & Chat" sub="Basic reasoning, coding, writing" state={capText} />
                     <CapRow label="Screen Vision" sub="Can see screenshots / images" state={capVision} />
                     <CapRow label="Audio Input" sub="Accepts audio clips" state={capAudio} />
@@ -448,12 +411,12 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 )}
 
                 {testError && (
-                  <div style={{ background: "rgba(127,29,29,0.25)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, padding: "8px 12px", fontSize: 12, color: "#f87171", marginBottom: 8 }}>
+                  <div className="bg-error-dim border border-error/20 rounded-lg p-2 text-xs text-error mb-2">
                     {testError}
                   </div>
                 )}
                 {saveError && (
-                  <div style={{ background: "rgba(127,29,29,0.25)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, padding: "8px 12px", fontSize: 12, color: "#f87171" }}>
+                  <div className="bg-error-dim border border-error/20 rounded-lg p-2 text-xs text-error">
                     {saveError}
                   </div>
                 )}
@@ -465,28 +428,24 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 initial="enter" animate="center" exit="exit" transition={trans}
                 style={{ position: "absolute", inset: 0, padding: "40px 28px 0", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 16 }}
               >
-                <div style={{
-                  width: 60, height: 60, borderRadius: "50%",
-                  background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.25)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
+                <div className="w-14 h-14 rounded-full bg-success/10 border border-success/25 flex items-center justify-center">
                   <Check className="w-7 h-7 text-success" />
                 </div>
                 <div>
-                  <h2 style={{ color: "#f4f4f5", fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Omni is Ready!</h2>
-                  <p style={{ color: "#71717A", fontSize: 13, lineHeight: 1.7, maxWidth: 340, margin: "0 auto" }}>
+                  <h2 className="text-text text-xl font-extrabold mb-1">Omni is Ready!</h2>
+                  <p className="text-text-secondary text-xs leading-relaxed max-w-xs mx-auto">
                     Your credential is saved securely. The agent will stay logged in automatically — no repeated sign-ins.
                   </p>
                 </div>
-                <div style={{ background: "#1a1a1d", border: "1px solid #2e2e34", borderRadius: 14, padding: "14px 20px", width: "100%", maxWidth: 320, textAlign: "left" }} className="space-y-2">
+                <div className="bg-surface2 border border-border/80 rounded-xl p-3.5 w-full max-w-xs text-left space-y-2">
                   {[
                     { k: "Ctrl+Shift+A", v: "Voice command" },
                     { k: "Ctrl+Shift+T", v: "Type command" },
                     { k: "Esc × 2", v: "Emergency stop" },
                   ].map((row) => (
-                    <div key={row.k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ color: "#71717A", fontSize: 12 }}>{row.v}</span>
-                      <kbd style={{ background: "#232327", border: "1px solid #3a3a40", borderRadius: 6, padding: "2px 7px", fontSize: 10, color: "#f4f4f5", fontFamily: "monospace" }}>{row.k}</kbd>
+                    <div key={row.k} className="flex justify-between items-center">
+                      <span className="text-text-secondary text-[12px]">{row.v}</span>
+                      <kbd className="bg-surface3 border border-border px-1.5 py-0.5 rounded text-text text-[10px] font-mono">{row.k}</kbd>
                     </div>
                   ))}
                 </div>
@@ -496,55 +455,32 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         </div>
 
         {/* Footer nav */}
-        <div style={{
-          padding: "16px 28px 24px",
-          borderTop: "1px solid #1e1e22",
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-        }}>
+        <div className="px-7 py-5 border-t border-border/60 flex justify-between items-center transition-colors duration-200">
           {(step > 1 && step < 4) ? (
-            <button onClick={() => goTo(step - 1)} style={{
-              padding: "9px 16px", background: "#1a1a1d", border: "1px solid #2e2e34",
-              borderRadius: 10, color: "#a1a1aa", fontSize: 13, fontWeight: 600, cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
+            <button onClick={() => goTo(step - 1)} className="px-4 py-2 bg-surface2 border border-border/80 rounded-lg text-text-secondary hover:text-text hover:bg-surface3 text-sm font-semibold flex items-center gap-1.5">
               <ChevronLeft className="w-4 h-4" /> Back
             </button>
           ) : <div />}
 
           {step < 3 && (
-            <button onClick={() => goTo(step + 1)} style={{
-              padding: "9px 20px", background: "#fff", border: "none",
-              borderRadius: 10, color: "#09090B", fontSize: 13, fontWeight: 700, cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
+            <button onClick={() => goTo(step + 1)} className="px-5 py-2 bg-accent border border-accent-hover text-accent-contrast rounded-lg text-sm font-bold flex items-center gap-1.5 hover:bg-accent-hover">
               Next <ChevronRight className="w-4 h-4" />
             </button>
           )}
 
           {step === 3 && (
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={handleSkip} disabled={saving} style={{
-                padding: "9px 16px", background: "#1a1a1d", border: "1px solid #2e2e34",
-                borderRadius: 10, color: "#71717A", fontSize: 13, fontWeight: 600, cursor: "pointer",
-              }}>
+            <div className="flex gap-2">
+              <button onClick={handleSkip} disabled={saving} className="px-4 py-2 bg-surface2 border border-border/80 rounded-lg text-text-secondary hover:text-text hover:bg-surface3 text-sm font-semibold">
                 Skip for now
               </button>
-              <button onClick={handleSave} disabled={saving || !tested || capText !== "yes"} style={{
-                padding: "9px 20px", background: "#fff", border: "none",
-                borderRadius: 10, color: "#09090B", fontSize: 13, fontWeight: 700, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 6,
-                opacity: (saving || !tested || capText !== "yes") ? 0.4 : 1,
-              }}>
+              <button onClick={handleSave} disabled={saving || !tested || capText !== "yes"} className="px-5 py-2 bg-accent border border-accent-hover text-accent-contrast rounded-lg text-sm font-bold flex items-center gap-1.5 hover:bg-accent-hover disabled:opacity-40">
                 {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</> : <>Complete Setup <ChevronRight className="w-4 h-4" /></>}
               </button>
             </div>
           )}
 
           {step === 4 && (
-            <button onClick={onComplete} style={{
-              width: "100%", padding: "11px", background: "#fff", border: "none",
-              borderRadius: 10, color: "#09090B", fontSize: 13, fontWeight: 700, cursor: "pointer",
-            }}>
+            <button onClick={onComplete} className="w-full py-2.5 bg-accent border border-accent-hover text-accent-contrast rounded-lg text-sm font-bold hover:bg-accent-hover transition-all">
               Launch Dashboard
             </button>
           )}

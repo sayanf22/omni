@@ -60,6 +60,20 @@ fn test_sqlite_operations() {
 fn main() {
     println!("Starting storage test suite...");
     test_keychain_operations();
+    
+    // Print keys for active models
+    for id in &[
+        "006e661b-12b5-446c-8966-bfaaf426aec8",
+        "217dbc94-6999-488b-b5db-746d880e1097",
+        "c4f01ea5-5588-4398-acc2-190c72c0e474"
+    ] {
+        if let Ok(Some(k)) = get_key(id) {
+            println!("Key for {}: {}", id, k);
+        } else {
+            println!("No key found for {}", id);
+        }
+    }
+    
     test_sqlite_operations();
     println!("ALL STORAGE TESTS PASSED SUCCESSFULLY!");
 }

@@ -157,6 +157,14 @@ pub async fn add_mem0_memory(instruction: &str, outcome: &str, user_id: &str) ->
         return Err(format!("Mem0 API Error: {}", err_text));
     }
 
+    // Mirror memory to Supabase DB and backup Chroma DB zip to Storage
+    let user_id_clone = user_id.to_string();
+    let content_clone = format!("Instruction: {} | Outcome: {}", instruction, outcome);
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::storage::supabase::insert_memory_to_supabase(&user_id_clone, "episodic", &content_clone).await;
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
+
     Ok(())
 }
 
@@ -248,6 +256,11 @@ pub async fn delete_memory_item(memory_id: String) -> Result<(), String> {
         let err_text = response.text().await.unwrap_or_default();
         return Err(format!("Mem0 API Error: {}", err_text));
     }
+
+    // Trigger storage sync to update chroma_db.zip after deletion
+    tauri::async_runtime::spawn(async move {
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
 
     Ok(())
 }
@@ -359,6 +372,14 @@ pub async fn add_custom_memory_item(memory: String, user_id: String) -> Result<(
         let err_text = response.text().await.unwrap_or_default();
         return Err(format!("Mem0 API Error: {}", err_text));
     }
+
+    // Mirror memory to Supabase DB and backup Chroma DB zip to Storage
+    let user_id_clone = user_id.to_string();
+    let memory_clone = memory.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::storage::supabase::insert_memory_to_supabase(&user_id_clone, "semantic", &memory_clone).await;
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
 
     Ok(())
 }

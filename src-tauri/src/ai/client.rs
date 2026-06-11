@@ -93,6 +93,80 @@ fn supports_vision(model: &CustomModel) -> bool {
     }
 }
 
+/// Lightweight connectivity check — sends a single "reply OK" message with no
+/// JSON mode enforced and no screenshot. Used by test_model_connection and
+/// test_stored_model so a real key always succeeds.
+pub async fn test_connection(model: &CustomModel, api_key: &str) -> anyhow::Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let provider = model.provider_type.to_lowercase();
+
+    if provider == "anthropic" {
+        let payload = json!({
+            "model": model.model_name,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "Reply with the single word OK."}]
+        });
+        let resp = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Anthropic API error ({}): {}", status, body));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&body)?;
+        return Ok(parsed["content"][0]["text"].as_str().unwrap_or("OK").to_string());
+    }
+
+    // OpenAI-compatible (openai, openrouter, deepseek, custom)
+    let base_url = match provider.as_str() {
+        "openai"     => "https://api.openai.com/v1".to_string(),
+        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        "deepseek"   => "https://api.deepseek.com/v1".to_string(),
+        _            => model.base_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+    };
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    // NOTE: No response_format: json_object here — just a plain chat call.
+    // json_object mode requires the word "json" in the prompt and breaks simple
+    // connectivity tests.
+    let payload = json!({
+        "model": model.model_name,
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}]
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json");
+    if provider == "openrouter" {
+        req = req
+            .header("HTTP-Referer", "https://github.com/sayanf22/omni")
+            .header("X-Title", "Omni Desktop Agent");
+    }
+
+    let resp = req.json(&payload).send().await
+        .map_err(|e| anyhow::anyhow!("Network error calling {}: {}", model.provider_type, e))?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("{} API error ({}): {}", model.provider_type, status, body));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("Failed to parse {} response: {} — raw: {}", model.provider_type, e, body))?;
+    Ok(parsed["choices"][0]["message"]["content"].as_str().unwrap_or("OK").to_string())
+}
+
 pub async fn send_chat_request(
     model: &CustomModel,
     api_key: &str,
@@ -140,11 +214,9 @@ async fn send_openai_compatible_request(
 
     let body_messages = build_messages_openai(messages, screenshot_base64);
 
-    // Reasoning models (o-series, deepseek-reasoner, etc.) reject a custom
-    // temperature and need room to "think", so only tune speed knobs for normal
-    // chat models. Normal models: lower max_tokens + low temperature = faster.
+    let provider = model.provider_type.to_lowercase();
     let reasoning = model_is_reasoning(model);
-    let payload = if reasoning {
+    let mut payload = if reasoning {
         json!({
             "model": model.model_name,
             "messages": body_messages,
@@ -159,12 +231,26 @@ async fn send_openai_compatible_request(
         })
     };
 
+    // Force JSON mode for compatible providers (prevents malformed JSON from
+    // free/small models that omit quotes on keys or return invalid syntax).
+    if !reasoning {
+        match provider.as_str() {
+            "openai" | "openrouter" | "deepseek" => {
+                payload.as_object_mut().unwrap().insert(
+                    "response_format".to_string(),
+                    json!({"type": "json_object"}),
+                );
+            }
+            _ => {}
+        }
+    }
+
     let mut request = client
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", api_key));
 
-    if model.provider_type.to_lowercase() == "openrouter" {
+    if provider == "openrouter" {
         request = request
             .header("HTTP-Referer", "https://github.com/sayanf22/omni")
             .header("X-Title", "Omni Desktop Agent");
@@ -371,7 +457,10 @@ pub async fn probe_model_vision(
     model_name: String,
     base_url: Option<String>,
     api_key: String,
+    model_id: Option<String>,
 ) -> Result<bool, String> {
+    // Resolve the real key: typed key takes priority; fall back to stored key.
+    let real_key = resolve_probe_key(&api_key, model_id.as_deref())?;
     let model = crate::storage::sqlite::CustomModel {
         id: "probe".to_string(),
         provider_type,
@@ -383,7 +472,19 @@ pub async fn probe_model_vision(
         role_writing: false,
         is_active: false,
     };
-    Ok(test_vision_capability(&model, &api_key).await)
+    Ok(test_vision_capability(&model, &real_key).await)
+}
+
+/// Resolve a real API key for probe commands:
+///   - If the caller passed a non-empty, non-placeholder key → use it.
+///   - Otherwise look up the real key by model_id from Credential Manager.
+fn resolve_probe_key(typed: &str, model_id: Option<&str>) -> Result<String, String> {
+    if !typed.is_empty() && !typed.contains('•') {
+        return Ok(typed.to_string());
+    }
+    let id = model_id.ok_or_else(|| "No API key provided and no model ID to look up stored key.".to_string())?;
+    crate::storage::keychain::get_api_key_raw_internal(id)
+        .ok_or_else(|| "No saved key found on this device. Paste your API key in the field above and test again.".to_string())
 }
 
 /// Tauri command — heuristic check: does this model name look like a reasoning model?
@@ -581,14 +682,18 @@ pub async fn test_video_capability(
 #[tauri::command]
 pub async fn probe_model_audio(
     provider_type: String, model_name: String, base_url: Option<String>, api_key: String,
+    model_id: Option<String>,
 ) -> Result<bool, String> {
-    Ok(test_audio_capability(&provider_type.to_lowercase(), &model_name, &base_url, &api_key).await)
+    let real_key = resolve_probe_key(&api_key, model_id.as_deref())?;
+    Ok(test_audio_capability(&provider_type.to_lowercase(), &model_name, &base_url, &real_key).await)
 }
 
 /// Tauri command — probe video input support.
 #[tauri::command]
 pub async fn probe_model_video(
     provider_type: String, model_name: String, base_url: Option<String>, api_key: String,
+    model_id: Option<String>,
 ) -> Result<bool, String> {
-    Ok(test_video_capability(&provider_type.to_lowercase(), &model_name, &base_url, &api_key).await)
+    let real_key = resolve_probe_key(&api_key, model_id.as_deref())?;
+    Ok(test_video_capability(&provider_type.to_lowercase(), &model_name, &base_url, &real_key).await)
 }

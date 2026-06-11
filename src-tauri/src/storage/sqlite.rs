@@ -46,13 +46,20 @@ pub fn get_db_path() -> PathBuf {
     path
 }
 
+/// Opens a database connection with a busy timeout configured to prevent lock contention.
+pub fn open_db_conn() -> Result<Connection, rusqlite::Error> {
+    let path = get_db_path();
+    let conn = Connection::open(&path)?;
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+    Ok(conn)
+}
+
 /// Initializes the local SQLite database schema.
 pub fn init_db() -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)
+    let conn = open_db_conn()
         .map_err(|e| anyhow::anyhow!("Failed to open DB: {:?}", e))?;
 
-    conn.execute("PRAGMA journal_mode=WAL;", [])
+    conn.pragma_update(None, "journal_mode", &"WAL")
         .map_err(|e| anyhow::anyhow!("Failed to enable WAL mode: {:?}", e))?;
 
     conn.execute(
@@ -106,13 +113,16 @@ pub fn init_db() -> anyhow::Result<()> {
         [],
     ).map_err(|e| anyhow::anyhow!("Failed to create custom_models table: {:?}", e))?;
 
+    // Migrate existing databases to add synced_at column if they don't have it
+    let _ = conn.execute("ALTER TABLE local_tasks ADD COLUMN synced_at TEXT", []);
+    let _ = conn.execute("ALTER TABLE local_audit ADD COLUMN synced_at TEXT", []);
+
     Ok(())
 }
 
 /// Saves a task record (insert or replace).
 pub fn save_task(task: &Task) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute(
         "INSERT OR REPLACE INTO local_tasks (id, description, status, steps_json, outcome, created_at, synced_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -131,8 +141,7 @@ pub fn save_task(task: &Task) -> anyhow::Result<()> {
 
 /// Retrieves the most recent tasks.
 pub fn get_recent_tasks_internal(limit: i32) -> anyhow::Result<Vec<Task>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, description, status, steps_json, outcome, created_at, synced_at
          FROM local_tasks ORDER BY created_at DESC LIMIT ?1",
@@ -158,8 +167,7 @@ pub fn get_recent_tasks_internal(limit: i32) -> anyhow::Result<Vec<Task>> {
 
 /// Retrieves all tasks that haven't been synced to the cloud database.
 pub fn get_unsynced_tasks() -> anyhow::Result<Vec<Task>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, description, status, steps_json, outcome, created_at, synced_at
          FROM local_tasks WHERE synced_at IS NULL",
@@ -185,8 +193,7 @@ pub fn get_unsynced_tasks() -> anyhow::Result<Vec<Task>> {
 
 /// Marks a task as synced by setting its synced_at timestamp.
 pub fn mark_synced(task_id: &str) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE local_tasks SET synced_at = ?1 WHERE id = ?2",
@@ -197,8 +204,7 @@ pub fn mark_synced(task_id: &str) -> anyhow::Result<()> {
 
 /// Saves an audit log entry.
 pub fn save_audit(entry: &AuditEntry) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute(
         "INSERT OR REPLACE INTO local_audit (id, action_type, tool_name, app_name, outcome, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -216,8 +222,7 @@ pub fn save_audit(entry: &AuditEntry) -> anyhow::Result<()> {
 
 /// Retrieves recent audit log entries.
 pub fn get_audit_log_internal(limit: i32) -> anyhow::Result<Vec<AuditEntry>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, action_type, tool_name, app_name, outcome, created_at
          FROM local_audit ORDER BY created_at DESC LIMIT ?1",
@@ -242,8 +247,7 @@ pub fn get_audit_log_internal(limit: i32) -> anyhow::Result<Vec<AuditEntry>> {
 
 /// Sets a local setting key-value pair.
 pub fn set_setting(key: &str, value: &str) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
@@ -254,8 +258,7 @@ pub fn set_setting(key: &str, value: &str) -> anyhow::Result<()> {
 
 /// Retrieves a local setting value.
 pub fn get_setting_internal(key: &str) -> anyhow::Result<Option<String>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
     let mut rows = stmt.query([key])?;
     if let Some(row) = rows.next()? {
@@ -273,8 +276,7 @@ pub fn save_setting_internal(key: &str, value: &str) -> anyhow::Result<()> {
 
 /// Clears all local task, audit, and settings data.
 pub fn clear_all_data() -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute("DELETE FROM local_tasks", [])?;
     conn.execute("DELETE FROM local_audit", [])?;
     conn.execute("DELETE FROM settings", [])?;
@@ -283,8 +285,7 @@ pub fn clear_all_data() -> anyhow::Result<()> {
 }
 
 pub fn save_custom_model_db(model: &CustomModel) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute(
         "INSERT OR REPLACE INTO custom_models (id, provider_type, model_name, display_name, base_url, role_vision, role_coding, role_writing, is_active, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -305,15 +306,13 @@ pub fn save_custom_model_db(model: &CustomModel) -> anyhow::Result<()> {
 }
 
 pub fn delete_custom_model_db(id: &str) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute("DELETE FROM custom_models WHERE id = ?1", [id])?;
     Ok(())
 }
 
 pub fn get_custom_models_db() -> anyhow::Result<Vec<CustomModel>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, provider_type, model_name, display_name, base_url, role_vision, role_coding, role_writing, is_active FROM custom_models ORDER BY created_at DESC"
     )?;
@@ -338,8 +337,7 @@ pub fn get_custom_models_db() -> anyhow::Result<Vec<CustomModel>> {
 }
 
 pub fn get_active_model_for_role_db(role: &str) -> anyhow::Result<Option<CustomModel>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let query = match role {
         "vision" => "SELECT id, provider_type, model_name, display_name, base_url, role_vision, role_coding, role_writing, is_active FROM custom_models WHERE role_vision = 1 AND is_active = 1 LIMIT 1",
         "coding" => "SELECT id, provider_type, model_name, display_name, base_url, role_vision, role_coding, role_writing, is_active FROM custom_models WHERE role_coding = 1 AND is_active = 1 LIMIT 1",
@@ -366,8 +364,7 @@ pub fn get_active_model_for_role_db(role: &str) -> anyhow::Result<Option<CustomM
 }
 
 pub fn get_unsynced_audit_entries() -> anyhow::Result<Vec<AuditEntry>> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     let mut stmt = conn.prepare(
         "SELECT id, action_type, tool_name, app_name, outcome, created_at
          FROM local_audit WHERE synced_at IS NULL",
@@ -391,8 +388,7 @@ pub fn get_unsynced_audit_entries() -> anyhow::Result<Vec<AuditEntry>> {
 }
 
 pub fn mark_audit_synced(audit_id: &str) -> anyhow::Result<()> {
-    let path = get_db_path();
-    let conn = Connection::open(&path)?;
+    let conn = open_db_conn()?;
     conn.execute(
         "UPDATE local_audit SET synced_at = ?1 WHERE id = ?2",
         params![chrono::Utc::now().to_rfc3339(), audit_id],
@@ -412,8 +408,12 @@ pub fn get_audit_log(limit: i32) -> Result<Vec<AuditEntry>, String> {
 }
 
 #[tauri::command]
-pub fn save_setting(key: String, value: String) -> Result<(), String> {
-    set_setting(&key, &value).map_err(|e| e.to_string())
+pub async fn save_setting(key: String, value: String) -> Result<(), String> {
+    set_setting(&key, &value).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        super::supabase::sync_all_to_cloud_async(None, None).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -431,8 +431,7 @@ pub fn clear_all_local_data() -> Result<(), String> {
 /// whose background loop is no longer alive to receive the cancel signal.
 #[tauri::command]
 pub fn force_cancel_task(task_id: String) -> Result<(), String> {
-    let path = get_db_path();
-    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    let conn = open_db_conn().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE local_tasks SET status = 'cancelled', outcome = COALESCE(outcome, 'Cancelled by user'), synced_at = NULL WHERE id = ?1 AND status = 'running'",
         params![task_id],
@@ -444,8 +443,7 @@ pub fn force_cancel_task(task_id: String) -> Result<(), String> {
 /// to clean up tasks orphaned by a crash or restart.
 #[tauri::command]
 pub fn cleanup_orphaned_tasks() -> Result<i64, String> {
-    let path = get_db_path();
-    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    let conn = open_db_conn().map_err(|e| e.to_string())?;
     let n = conn.execute(
         "UPDATE local_tasks SET status = 'cancelled', outcome = COALESCE(outcome, 'Interrupted (app restarted)'), synced_at = NULL WHERE status = 'running'",
         [],
@@ -457,6 +455,9 @@ pub fn cleanup_orphaned_tasks() -> Result<i64, String> {
 pub async fn save_custom_model(model: CustomModel) -> Result<(), String> {
     save_custom_model_db(&model).map_err(|e| e.to_string())?;
     let _ = super::supabase::sync_model_to_supabase(&model, false).await;
+    tauri::async_runtime::spawn(async move {
+        super::supabase::sync_all_to_cloud_async(None, None).await;
+    });
     Ok(())
 }
 
@@ -467,6 +468,9 @@ pub async fn delete_custom_model(id: String) -> Result<(), String> {
         let _ = super::supabase::sync_model_to_supabase(m, true).await;
     }
     delete_custom_model_db(&id).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        super::supabase::sync_all_to_cloud_async(None, None).await;
+    });
     Ok(())
 }
 

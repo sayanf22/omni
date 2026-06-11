@@ -94,7 +94,12 @@ export const useStore = create<AppState>((set, get) => ({
       const tasks = await invoke<Task[]>("get_recent_tasks", { limit: 50 });
       const audits = await invoke<AuditEntry[]>("get_audit_log", { limit: 50 });
       const models = await invoke<CustomModel[]>("get_custom_models");
-      set({ tasks, audits, models, isLoading: false });
+      set({
+        tasks: tasks || [],
+        audits: audits || [],
+        models: models || [],
+        isLoading: false
+      });
     } catch (e) {
       console.error("Failed to fetch local database data", e);
       set({ isLoading: false });

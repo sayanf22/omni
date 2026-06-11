@@ -259,6 +259,12 @@ pub async fn test_model_connection(
     base_url: Option<String>,
     api_key: String,
 ) -> Result<String, String> {
+    // Reject bullet-dot placeholder — the frontend must not pass the masked
+    // display value as a real key.
+    if api_key.contains('•') {
+        return Err("No API key provided — paste your key in the API Key field and try again.".to_string());
+    }
+
     if api_key == "mock" || api_key == "test" || api_key == "demo" || api_key.starts_with("mock-") {
         return Ok("OK (Mocked Connection)".to_string());
     }
@@ -275,15 +281,51 @@ pub async fn test_model_connection(
         is_active: true,
     };
 
-    let test_messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: "Say only the word 'OK' to confirm connection.".to_string(),
-    }];
-
-    crate::ai::client::send_chat_request(&dummy_model, &api_key, test_messages, None)
+    crate::ai::client::test_connection(&dummy_model, &api_key)
         .await
         .map_err(|e| {
             eprintln!("test_model_connection failed: {:?}", e);
+            e.to_string()
+        })
+}
+
+/// Tests a model that already has a key stored in Credential Manager.
+/// The real API key is fetched internally — it is NEVER returned to the frontend.
+/// `typed_key` is the key the user typed in the form this session (may be empty).
+/// If empty and no key is stored, returns an error asking the user to paste one.
+#[tauri::command]
+pub async fn test_stored_model(
+    model_id: String,
+    provider_type: String,
+    model_name: String,
+    base_url: Option<String>,
+    typed_key: String,
+) -> Result<String, String> {
+    // Resolve key: use what the user typed this session, else fall back to the
+    // securely stored key. Never accept the bullet-dot placeholder.
+    let key_to_use = if !typed_key.is_empty() && !typed_key.contains('•') {
+        typed_key
+    } else {
+        crate::storage::keychain::get_api_key_raw_internal(&model_id)
+            .ok_or_else(|| "No saved key found on this device. Paste your API key in the field above, then test.".to_string())?
+    };
+
+    let dummy_model = CustomModel {
+        id: model_id,
+        provider_type,
+        model_name,
+        display_name: "Test Model".to_string(),
+        base_url,
+        role_vision: false,
+        role_coding: false,
+        role_writing: false,
+        is_active: true,
+    };
+
+    crate::ai::client::test_connection(&dummy_model, &key_to_use)
+        .await
+        .map_err(|e| {
+            eprintln!("test_stored_model failed: {:?}", e);
             e.to_string()
         })
 }

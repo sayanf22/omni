@@ -71,12 +71,13 @@ pub fn launch_sidecar(app: &AppHandle) {
 /// Attempt to spawn the sidecar binary and extract the SIDECAR_TOKEN from its stdout.
 async fn try_spawn_sidecar(app: &AppHandle) -> Result<String, String> {
     // Retrieve Supabase credentials from DPAPI to pass as env vars (never hardcode them).
+    // Override via keychain is supported; otherwise falls back to default compiled-in public credentials.
     let supabase_url = crate::storage::keychain::get_key("supabase_url")
         .unwrap_or(None)
-        .unwrap_or_default();
+        .unwrap_or_else(|| crate::storage::supabase::SUPABASE_URL.to_string());
     let supabase_key = crate::storage::keychain::get_key("supabase_anon_key")
         .unwrap_or(None)
-        .unwrap_or_default();
+        .unwrap_or_else(|| crate::storage::supabase::SUPABASE_ANON_KEY.to_string());
 
     let shell = app.shell();
 

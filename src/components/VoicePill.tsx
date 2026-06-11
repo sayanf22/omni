@@ -48,44 +48,60 @@ export const VoicePill: React.FC = () => {
   const cancelHide = () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
 
   useEffect(() => {
-    const cleanups: Array<() => void> = [];
-    (async () => {
-      cleanups.push(await listen("hotkey:mic_start", () => {
+    let active = true;
+    const unsubscribes: Array<() => void> = [];
+
+    async function setup() {
+      const addListener = async (evt: string, cb: (...args: any[]) => void) => {
+        const unsub = await listen(evt, cb);
+        if (active) {
+          unsubscribes.push(unsub);
+        } else {
+          unsub();
+        }
+      };
+
+      await addListener("hotkey:mic_start", () => {
         cancelHide(); setHeard(""); setMsg(""); setLevel(0); setState("listening");
-      }));
-      cleanups.push(await listen<number>("voice:level", (e) => {
+      });
+      await addListener("voice:level", (e: any) => {
         if (typeof e.payload === "number") setLevel(e.payload);
-      }));
-      cleanups.push(await listen("hotkey:mic_stop", () => {
+      });
+      await addListener("hotkey:mic_stop", () => {
         setState("transcribing");
-      }));
-      cleanups.push(await listen<{ text: string }>("voice:transcript", (e) => {
+      });
+      await addListener("voice:transcript", (e: any) => {
         setHeard((e.payload?.text || "").trim());
         setState("thinking");
-      }));
-      cleanups.push(await listen<{ ok: boolean; text: string; error?: string }>("voice:test_result", (e) => {
+      });
+      await addListener("voice:test_result", (e: any) => {
         if (e.payload?.ok) { setHeard((e.payload.text || "").trim()); setState("done"); setMsg("Heard you clearly"); }
         else { setMsg(e.payload?.error || "Couldn't transcribe"); setState("error"); }
         scheduleHide(5000);
-      }));
-      cleanups.push(await listen<any>("task:started", (e) => {
+      });
+      await addListener("task:started", (e: any) => {
         const instr = (e.payload?.instruction || "").trim();
         if (instr) setHeard(instr);
         cancelHide(); setState("thinking");
-      }));
-      cleanups.push(await listen<any>("task:step", (e) => {
+      });
+      await addListener("task:step", (e: any) => {
         cancelHide(); setState("working");
         setMsg(e.payload?.thought || e.payload?.description || "Working…");
-      }));
-      cleanups.push(await listen<any>("task:done", (e) => {
+      });
+      await addListener("task:done", (e: any) => {
         setState("done"); setMsg(e.payload?.result || "Done"); scheduleHide(5000);
-      }));
-      cleanups.push(await listen<any>("task:failed", (e) => {
+      });
+      await addListener("task:failed", (e: any) => {
         setState("error"); setMsg(e.payload?.error || "Task failed"); scheduleHide(6000);
-      }));
-      cleanups.push(await listen("agent:killed", () => { setState("hidden"); }));
-    })();
-    return () => cleanups.forEach((fn) => fn());
+      });
+      await addListener("agent:killed", () => { setState("hidden"); });
+    }
+
+    setup();
+    return () => {
+      active = false;
+      unsubscribes.forEach((fn) => fn());
+    };
   }, []);
 
   if (state === "hidden") return null;

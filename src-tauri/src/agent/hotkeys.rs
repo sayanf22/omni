@@ -151,6 +151,11 @@ pub fn set_hotkey(app: tauri::AppHandle, hotkey_type: String, hotkey_value: Stri
     register_core_shortcuts(&app)
         .map_err(|e| format!("Failed to re-register shortcuts: {}", e))?;
 
+    // Auto-save settings to the cloud
+    tauri::async_runtime::spawn(async move {
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
+
     // Notify frontend of the change
     let _ = app.emit("hotkey:updated", serde_json::json!({
         "type": hotkey_type,
@@ -223,14 +228,16 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
                 if let Ok(Some(monitor)) = overlay.primary_monitor() {
                     let scale = monitor.scale_factor();
                     let screen_w = monitor.size().width as f64 / scale;
-                    let x = (screen_w - 360.0).max(0.0);
-                    let _ = overlay.set_position(tauri::LogicalPosition::new(x, 16.0));
+                    // 400px window + 20px right margin from screen edge; 40px from top
+                    let x = (screen_w - 420.0).max(0.0);
+                    let _ = overlay.set_position(tauri::LogicalPosition::new(x, 40.0));
                 }
                 let _ = overlay.set_focus();
             }
             let _ = app.emit("hotkey:mic_start", serde_json::json!({}));
             if let Err(e) = crate::voice::stt::start_mic_recording(app.clone()) {
                 tracing::error!("Failed to start mic recording: {:?}", e);
+                let _ = app.emit("hotkey:mic_stop", serde_json::json!({}));
                 let _ = app.emit("task:failed", serde_json::json!({
                     "error": format!("Could not start microphone: {}", e)
                 }));
@@ -239,16 +246,19 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: Shortcut, state: Shortcu
         // Released is intentionally ignored.
 
     } else if text_shortcut.map_or(false, |s| s == shortcut) && state == ShortcutState::Pressed {
-        // ── Text command mode: show the floating text input window ────────────
-        if let Some(text_win) = app.get_webview_window("textinput") {
-            let _ = text_win.show();
-            let _ = text_win.set_focus();
-        } else {
-            // Fallback: bring main window to focus
-            if let Some(main) = app.get_webview_window("main") {
-                let _ = main.show();
-                let _ = main.set_focus();
+        // ── Text command mode: show the floating overlay in top-right and enter text mode ────
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.unminimize();
+            let _ = overlay.show();
+            let _ = overlay.set_always_on_top(true);
+            if let Ok(Some(monitor)) = overlay.primary_monitor() {
+                let scale = monitor.scale_factor();
+                let screen_w = monitor.size().width as f64 / scale;
+                // 400px window + 20px right margin from screen edge; 40px from top
+                let x = (screen_w - 420.0).max(0.0);
+                let _ = overlay.set_position(tauri::LogicalPosition::new(x, 40.0));
             }
+            let _ = overlay.set_focus();
         }
         let _ = app.emit("hotkey:text_mode", serde_json::json!({}));
 

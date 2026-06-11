@@ -41,9 +41,14 @@ pub fn get_key(name: &str) -> anyhow::Result<Option<String>> {
             }
             let blob_size = (*p_cred).CredentialBlobSize as usize;
             let blob_ptr = (*p_cred).CredentialBlob;
-            let bytes = std::slice::from_raw_parts(blob_ptr, blob_size);
-            let value = String::from_utf8(bytes.to_vec())
-                .map_err(|e| anyhow::anyhow!("Failed to parse UTF-8: {}", e))?;
+            
+            let value = if blob_ptr.is_null() || blob_size == 0 {
+                String::new()
+            } else {
+                let bytes = std::slice::from_raw_parts(blob_ptr, blob_size);
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse UTF-8: {}", e))?
+            };
 
             CredFree(p_cred as *mut _);
             Ok(Some(value))
@@ -71,7 +76,11 @@ pub fn has_key(name: &str) -> bool {
 /// Tauri IPC wrappers
 #[tauri::command]
 pub fn save_api_key(name: String, value: String) -> Result<(), String> {
-    store_key(&name, &value).map_err(|e| e.to_string())
+    store_key(&name, &value).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -83,9 +92,20 @@ pub fn get_api_key(name: String) -> Result<Option<String>, String> {
     }
 }
 
+/// Returns the real API key for a model — used only server-side by test/probe
+/// commands so the raw secret never travels to the frontend JS context.
+/// This command is intentionally NOT exposed in the invoke_handler.
+pub fn get_api_key_raw_internal(name: &str) -> Option<String> {
+    get_key(name).unwrap_or(None)
+}
+
 #[tauri::command]
 pub fn delete_api_key(name: String) -> Result<(), String> {
-    delete_key(&name).map_err(|e| e.to_string())
+    delete_key(&name).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        crate::storage::supabase::sync_all_to_cloud_async(None, None).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]

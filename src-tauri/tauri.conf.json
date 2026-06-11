@@ -23,26 +23,12 @@
       {
         "label": "overlay",
         "title": "Omni Overlay",
-        "width": 360,
-        "height": 470,
-        "minWidth": 360,
-        "minHeight": 470,
-        "maxWidth": 360,
-        "maxHeight": 470,
-        "resizable": false,
-        "fullscreen": false,
-        "decorations": false,
-        "transparent": false,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true,
-        "shadow": true
-      },
-      {
-        "label": "textinput",
-        "title": "Omni Quick Command",
-        "width": 640,
-        "height": 104,
+        "width": 400,
+        "height": 200,
+        "minWidth": 400,
+        "minHeight": 50,
+        "maxWidth": 400,
+        "maxHeight": 900,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
@@ -50,8 +36,12 @@
         "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true,
-        "center": true,
-        "shadow": false
+        "shadow": true,
+        "windowEffects": {
+          "effects": ["acrylic"],
+          "state": "active",
+          "color": [10, 10, 14, 180]
+        }
       }
     ],
     "security": {

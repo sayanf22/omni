@@ -241,7 +241,24 @@ pub fn live_set_phase(phase: &str, header: &str) {
 }
 pub fn live_set_heard(heard: &str) { live_bump(|s| s.heard = heard.into()); }
 pub fn live_add_step(step: serde_json::Value) {
-    live_bump(|s| { s.steps.push(step); let n = s.steps.len(); if n > 40 { s.steps.drain(0..n - 40); } });
+    live_bump(|s| {
+        let step_num = step.get("step_num").and_then(|v| v.as_u64());
+        let mut replaced = false;
+        if let Some(num) = step_num {
+            for st in &mut s.steps {
+                if st.get("step_num").and_then(|v| v.as_u64()) == Some(num) {
+                    *st = step.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+        if !replaced {
+            s.steps.push(step);
+        }
+        let n = s.steps.len();
+        if n > 40 { s.steps.drain(0..n - 40); }
+    });
 }
 pub fn live_set_question(id: &str, q: &str) {
     live_bump(|s| { s.phase = "question".into(); s.question_id = id.into(); s.question = q.into(); });
@@ -371,6 +388,25 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     live_set_heard(&instruction);
     live_set_phase("thinking", "Planning…");
 
+    // Immediately surface Step 1 so the overlay shows the task is running
+    // within ~1 second of the user sending a command — before any AI call.
+    let step_1_thought = format!("Task opened: \"{}\" — analysing and planning actions…", 
+        if instruction.len() > 80 { &instruction[..80] } else { &instruction });
+    let _ = app.emit("task:step", serde_json::json!({
+        "step_num": 0,
+        "thought": step_1_thought,
+        "tool": null,
+        "description": "Connecting to AI model and building execution plan…",
+        "success": true
+    }));
+    live_add_step(serde_json::json!({
+        "step_num": 0,
+        "thought": step_1_thought,
+        "tool": null,
+        "description": "Connecting to AI model and building execution plan…",
+        "success": true
+    }));
+
     // Show the top-right overlay so the user always sees what the agent is doing,
     // even when the main dashboard is closed or hidden. Force it visible + on top
     // + correctly positioned (robust against minimized / drifted / not-on-top).
@@ -381,8 +417,8 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         if let Ok(Some(monitor)) = overlay.primary_monitor() {
             let scale = monitor.scale_factor();
             let screen_w = monitor.size().width as f64 / scale;
-            let x = (screen_w - 360.0).max(0.0) as i32;
-            let _ = overlay.set_position(tauri::LogicalPosition::new(x as f64, 16.0));
+            let x = (screen_w - 420.0).max(0.0);
+            let _ = overlay.set_position(tauri::LogicalPosition::new(x, 40.0));
         }
         let _ = overlay.set_focus();
     }
@@ -394,6 +430,14 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     let takeover_on = crate::storage::sqlite::get_setting_internal("takeover_mode")
         .ok().flatten().map(|v| v != "false").unwrap_or(true);
     let mut takeover_started = false;
+    let mut target_window: Option<String> = {
+        let active = crate::automation::process::get_active_window().name;
+        if !active.trim().is_empty() && !active.to_lowercase().contains("omni") {
+            Some(active)
+        } else {
+            None
+        }
+    };
 
     // Determine task type + check vision availability
     let task_type = detect_task_type(&instruction);
@@ -753,6 +797,24 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
     // re-launching, and reason strategically about the user's actual system.
     let sys_context = crate::automation::process::get_system_context();
     system_prompt.push_str(&format!("\n\n== CURRENT SYSTEM STATE ==\n{}\n", sys_context));
+
+    // ── Active Project Workspace: restrict agent to this directory ──────────
+    let project_dir = crate::storage::sqlite::get_setting_internal("active_project_dir")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+    system_prompt.push_str(&format!(
+        "\n\n== ACTIVE PROJECT / WORKSPACE ==\n\
+         Active Project Directory: {}\n\
+         You are working on a single permanent project in this directory. All file system tools (read, write, list, delete, search) and terminal commands MUST be run relative to or inside this active project directory. \
+         Do NOT build a brand-new project/folder or initialize a new project from scratch for every prompt. \
+         Instead, continue building on, editing, and expanding the existing project at this location.\n",
+        project_dir
+    ));
 
     // ── Conversation memory: inject recent tasks so follow-ups have context ──
     // Lets the user say things like "you didn't do that, why?" or "do it again"
@@ -1188,6 +1250,20 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 takeover_started = true;
             }
 
+            // Enforce target window focus before mouse/keyboard actions to prevent focus drift.
+            if name.as_str() == "mouse" || name.as_str() == "keyboard" {
+                if let Some(ref target) = target_window {
+                    let current = crate::automation::process::get_active_window().name;
+                    if current != *target {
+                        if crate::automation::process::is_app_running(target) {
+                            tracing::info!("Focus drift detected (current: '{}', target: '{}'). Re-focusing target window.", current, target);
+                            let _ = crate::automation::process::focus_window_by_name(target);
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                    }
+                }
+            }
+
             let (outcome_text, success) = match tool.execute(tool_params.clone()).await {
                 Ok(out) => (out, true),
                 Err(e) => (format!("Tool '{}' failed: {}", name, e), false),
@@ -1199,6 +1275,12 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
                 let act = tool_params["action"].as_str().unwrap_or("");
                 if name.as_str() == "keyboard" && act == "type" { did_type_text = true; }
                 if name.as_str() == "clipboard" && act == "paste" { did_type_text = true; }
+
+                // Update target window to the currently active window
+                let active = crate::automation::process::get_active_window().name;
+                if !active.trim().is_empty() && !active.to_lowercase().contains("omni") {
+                    target_window = Some(active);
+                }
             }
 
             let _ = save_audit(&AuditEntry {
@@ -1211,10 +1293,24 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
 
             let step_thought = if idx == 0 { thought.clone() }
                 else { format!("…then {} {}", name, tool_params["action"].as_str().unwrap_or("")) };
+
+            // Emit a "running" preview of this step BEFORE execution so the user
+            // sees the agent's intent immediately instead of only after the action completes.
+            let _ = app.emit("task:step", serde_json::json!({
+                "step_num": step_num, "thought": step_thought,
+                "tool": name, "description": format!("Running: {} {}", name, tool_params["action"].as_str().unwrap_or("")), "success": true
+            }));
+            live_set_phase("working", &step_thought);
+            live_add_step(serde_json::json!({
+                "step_num": step_num, "thought": step_thought,
+                "tool": name, "description": format!("Running: {} {}", name, tool_params["action"].as_str().unwrap_or("")), "success": true
+            }));
+
             steps_log.push(StepProgress {
                 step_num, thought: step_thought.clone(),
                 tool: Some(name.to_string()), description: outcome_text.clone(), success,
             });
+            // Emit the completed step (overwrites the "running" preview emitted above)
             let _ = app.emit("task:step", serde_json::json!({
                 "step_num": step_num, "thought": step_thought,
                 "tool": name, "description": outcome_text, "success": success
@@ -1283,6 +1379,13 @@ async fn execute_task(instruction: String, user_id: String, task_id: String, app
         synced_at: None,
     };
     let _ = save_task(&final_task);
+
+    // Sync in the background to avoid blocking the main task execution
+    let task_id_clone = task_id.clone();
+    let steps_json_str = serde_json::to_string(&steps_log).unwrap_or_default();
+    tauri::async_runtime::spawn(async move {
+        crate::storage::supabase::sync_all_to_cloud_async(Some(task_id_clone), Some(steps_json_str)).await;
+    });
 
     // Emit completion / save memory
     if final_status == "completed" {

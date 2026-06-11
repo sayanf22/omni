@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: ['selector', '[data-theme="dark"]'],
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}"
@@ -25,6 +26,12 @@ export default {
         error:          "var(--error)",
         "error-dim":    "var(--error-dim)",
       },
+      spacing: {
+        "4.5": "1.125rem",
+        "5.5": "1.375rem",
+        "6.5": "1.625rem",
+        "9.5": "2.375rem",
+      },
       borderRadius: {
         sm: "6px",
         DEFAULT: "10px",
@@ -33,7 +40,8 @@ export default {
         xl: "20px",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["Plus Jakarta Sans", "Inter", "system-ui", "sans-serif"],
+        serif: ["Georgia", "serif"],
       }
     },
   },

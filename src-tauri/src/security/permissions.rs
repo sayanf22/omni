@@ -160,6 +160,12 @@ impl PermissionGate {
             let _ = tx.send(answer);
         }
     }
+
+    /// Check if there is currently a pending question request.
+    pub async fn has_pending_question(&self) -> bool {
+        let lock = self.pending_answers.lock().await;
+        !lock.is_empty()
+    }
 }
 
 #[tauri::command]

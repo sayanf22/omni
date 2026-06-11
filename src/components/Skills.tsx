@@ -79,36 +79,36 @@ export const Skills: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-text">Skills</h1>
-        <p className="text-text-secondary text-sm">
+        <h1 className="text-4xl font-black text-text">Skills</h1>
+        <p className="text-text-secondary text-[16px] mt-2">
           Built-in automation capabilities and custom instructions the agent always follows.
         </p>
       </div>
 
       {/* ── Custom Skills ──────────────────────────────────────────────── */}
-      <div className="bg-surface border border-border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="premium-card p-7 shadow-md space-y-5">
         <div className="flex justify-between items-start">
           <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <Sparkles className="w-4 h-4 text-accent" />
-              <h3 className="font-semibold text-text text-sm">Custom Skills</h3>
+            <div className="flex items-center gap-2.5 mb-1">
+              <Sparkles className="w-5 h-5 text-accent" />
+              <h3 className="font-extrabold text-text text-base">Custom Skills</h3>
               {saved && (
-                <span className="flex items-center gap-1 text-[10px] text-success font-semibold">
-                  <Check className="w-3 h-3" /> Saved
+                <span className="flex items-center gap-1 text-xs text-success font-extrabold">
+                  <Check className="w-4 h-4" /> Saved
                 </span>
               )}
             </div>
-            <p className="text-xs text-text-secondary leading-relaxed">
+            <p className="text-sm text-text-secondary leading-relaxed">
               Write instructions the agent will always follow — your preferences, style rules, shortcuts, or workflows.
               These are injected into every task's system prompt.
             </p>
           </div>
           {!isAdding && (
             <button onClick={() => setIsAdding(true)}
-              className="px-3 py-1.5 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors shrink-0">
-              <Plus className="w-3.5 h-3.5" /> Add Skill
+              className="px-4.5 py-2.5 bg-accent hover:bg-accent-hover text-accent-contrast text-sm font-extrabold rounded-xl flex items-center gap-2 transition-colors shrink-0 shadow-sm">
+              <Plus className="w-4.5 h-4.5" /> Add Skill
             </button>
           )}
         </div>
@@ -116,38 +116,38 @@ export const Skills: React.FC = () => {
         {/* Add form */}
         {isAdding && (
           <form onSubmit={handleAddSkill}
-            className="p-4 bg-surface2 border border-border rounded-xl space-y-3">
+            className="p-6 bg-surface2/50 border border-border/80 rounded-[28px] space-y-4 shadow-sm animate-fade-in">
             <div>
-              <label className="block text-[10px] font-bold text-text-secondary uppercase tracking-wider mb-1">
+              <label className="block text-[11px] font-black text-text-muted uppercase tracking-wider mb-1.5">
                 Skill Name
               </label>
               <input
                 required value={newName} onChange={(e) => setNewName(e.target.value)}
                 placeholder="e.g. LinkedIn Post Style"
-                className="w-full px-3 py-2 bg-surface3 border border-border rounded-lg text-text text-sm focus:outline-none focus:border-accent"
+                className="w-full px-4 py-3 bg-surface border border-border/60 hover:border-border rounded-2xl text-text text-sm focus:outline-none focus:ring-0"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-text-secondary uppercase tracking-wider mb-1">
+              <label className="block text-[11px] font-black text-text-muted uppercase tracking-wider mb-1.5">
                 Instructions for the Agent
               </label>
               <textarea
                 required rows={4} value={newInstructions} onChange={(e) => setNewInstructions(e.target.value)}
                 placeholder={`e.g. When writing LinkedIn posts: always keep them under 150 words, use a professional but friendly tone, no hashtags, and end with a call-to-action question.`}
-                className="w-full px-3 py-2 bg-surface3 border border-border rounded-lg text-text text-sm focus:outline-none focus:border-accent resize-none placeholder:text-text-muted"
+                className="w-full px-4 py-3 bg-surface border border-border/60 hover:border-border rounded-2xl text-text text-sm focus:outline-none focus:ring-0 resize-none placeholder:text-text-muted"
               />
-              <p className="text-[10px] text-text-muted mt-1">
+              <p className="text-xs text-text-muted mt-1.5">
                 Be as specific as possible. The agent will follow these instructions on every relevant task.
               </p>
             </div>
-            <div className="flex gap-2 justify-end">
+            <div className="flex gap-3 justify-end">
               <button type="button" onClick={() => { setIsAdding(false); setNewName(""); setNewInstructions(""); }}
-                className="px-4 py-2 text-xs font-semibold text-text-secondary border border-border bg-surface3 rounded-lg hover:text-text transition-colors">
+                className="px-5 py-2.5 text-sm font-extrabold text-text-secondary border border-border bg-surface3 rounded-xl hover:text-text transition-colors">
                 Cancel
               </button>
               <button type="submit" disabled={saving}
-                className="px-4 py-2 bg-accent hover:bg-accent-hover text-accent-contrast text-xs font-bold rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</> : "Save Skill"}
+                className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-accent-contrast text-sm font-extrabold rounded-xl transition-colors disabled:opacity-50 flex items-center gap-2 shadow-sm">
+                {saving ? <><Loader2 className="w-4.5 h-4.5 animate-spin" />Saving…</> : "Save Skill"}
               </button>
             </div>
           </form>
@@ -155,37 +155,37 @@ export const Skills: React.FC = () => {
 
         {/* Custom skills list */}
         {loading ? (
-          <div className="flex items-center gap-2 py-4 text-text-muted">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <p className="text-xs">Loading…</p>
+          <div className="flex items-center gap-2.5 py-5 text-text-muted">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <p className="text-sm">Loading…</p>
           </div>
         ) : customSkills.length > 0 ? (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {customSkills.map((skill) => (
               <div key={skill.id}
-                className="p-4 bg-surface2 border border-accent/20 rounded-xl flex items-start justify-between gap-3">
+                className="p-5.5 bg-surface border border-border/80 hover:border-border rounded-2xl flex items-start justify-between gap-4 shadow-sm transition-all">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Sparkles className="w-3.5 h-3.5 text-accent shrink-0" />
-                    <p className="text-sm font-semibold text-text">{skill.name}</p>
-                    <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/20">
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <Sparkles className="w-4.5 h-4.5 text-accent shrink-0" />
+                    <p className="text-base font-extrabold text-text">{skill.name}</p>
+                    <span className="text-[10.5px] font-black uppercase px-2 py-0.5 rounded bg-accent/15 text-accent border border-accent/20">
                       Custom
                     </span>
                   </div>
-                  <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">{skill.instructions}</p>
+                  <p className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">{skill.instructions}</p>
                 </div>
                 <button onClick={() => handleDeleteSkill(skill.id)}
-                  className="p-1.5 text-text-muted hover:text-error hover:bg-error-dim/20 rounded-md transition-colors shrink-0">
-                  <Trash2 className="w-3.5 h-3.5" />
+                  className="p-2 text-text-muted hover:text-error hover:bg-error-dim/20 rounded-xl transition-colors shrink-0">
+                  <Trash2 className="w-4.5 h-4.5" />
                 </button>
               </div>
             ))}
           </div>
         ) : !isAdding && (
-          <div className="border border-dashed border-border rounded-xl p-6 text-center space-y-2">
-            <Sparkles className="w-6 h-6 text-text-muted mx-auto" />
-            <p className="text-sm font-semibold text-text-secondary">No custom skills yet</p>
-            <p className="text-xs text-text-muted max-w-sm mx-auto">
+          <div className="border border-dashed border-border rounded-2xl p-8 text-center space-y-3">
+            <Sparkles className="w-7 h-7 text-text-muted mx-auto" />
+            <p className="text-base font-extrabold text-text-secondary">No custom skills yet</p>
+            <p className="text-sm text-text-muted max-w-sm mx-auto leading-relaxed">
               Add instructions like "Always save files to D:/Work" or "Write emails in a formal tone" — the agent will follow them automatically.
             </p>
           </div>
@@ -193,27 +193,27 @@ export const Skills: React.FC = () => {
       </div>
 
       {/* ── Built-in Skills ────────────────────────────────────────────── */}
-      <div className="space-y-3">
+      <div className="space-y-4">
         <div>
-          <h3 className="font-semibold text-text text-sm">Built-in Capabilities</h3>
-          <p className="text-xs text-text-secondary">These automation tools are always available to the agent.</p>
+          <h3 className="font-extrabold text-text text-base">Built-in Capabilities</h3>
+          <p className="text-sm text-text-secondary font-semibold">These automation tools are always available to the agent.</p>
         </div>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-4 gap-6">
           {BUILT_IN_SKILLS.map((skill, i) => {
             const Icon = skill.icon;
             return (
-              <div key={i} className="bg-surface border border-border rounded-xl p-4 space-y-3 flex flex-col justify-between shadow-sm">
-                <div className="space-y-2">
-                  <div className="w-9 h-9 rounded-lg bg-surface2 border border-border flex items-center justify-center text-accent">
-                    <Icon className="w-4.5 h-4.5" />
+              <div key={i} className="premium-card p-6 flex flex-col justify-between shadow-md hover:scale-[1.02] active:scale-[0.99] transition-all duration-300">
+                <div className="space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-surface2 border border-border/85 flex items-center justify-center text-accent shadow-sm shrink-0">
+                    <Icon className="w-5.5 h-5.5" />
                   </div>
-                  <h4 className="font-semibold text-text text-sm">{skill.name}</h4>
-                  <p className="text-xs text-text-secondary leading-relaxed">{skill.desc}</p>
+                  <h4 className="font-extrabold text-text text-base">{skill.name}</h4>
+                  <p className="text-sm text-text-secondary leading-relaxed">{skill.desc}</p>
                 </div>
-                <span className={`inline-block px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider w-fit ${
+                <span className={`inline-block px-2.5 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider w-fit border mt-4 ${
                   skill.tier === "active"
-                    ? "bg-success/15 text-success border border-success/20"
-                    : "bg-surface3 text-text-muted border border-border"
+                    ? "bg-success/15 text-success border-success/20"
+                    : "bg-surface3 text-text-muted border-border"
                 }`}>
                   {skill.tier === "active" ? "✓ Active" : "V2 Coming"}
                 </span>
