@@ -1248,7 +1248,7 @@ export const Settings: React.FC = () => {
       e.preventDefault();
       e.stopPropagation();
 
-      // If user presses Escape alone, cancel recording
+      // Escape alone = cancel
       if (pressedKeys.length === 1 && pressedKeys[0] === "Escape") {
         setRecordingHotkey(null);
         setPressedKeys([]);
@@ -1256,19 +1256,21 @@ export const Settings: React.FC = () => {
         return;
       }
 
-      // Need at least one modifier AND one non-modifier key
       const modifiers = ["Ctrl", "Shift", "Alt", "Win"];
       const nonModifiers = pressedKeys.filter(k => !modifiers.includes(k));
       const hasMod = pressedKeys.some(k => modifiers.includes(k));
 
-      if (!hasMod || nonModifiers.length === 0) {
-        setHotkeyMsg({ text: "Need a modifier (Ctrl / Shift / Alt) + a key. Win key alone is not supported.", success: false });
+      // Allow F-keys (F1-F24) as standalone shortcuts without a modifier
+      const isFKey = nonModifiers.length === 1 && /^F\d+$/.test(nonModifiers[0]);
+
+      if (!isFKey && (!hasMod || nonModifiers.length === 0)) {
+        setHotkeyMsg({ text: "Use modifier+key (e.g. Ctrl+Shift+A) or a function key (F13, F14…)", success: false });
         setRecordingHotkey(null);
         setPressedKeys([]);
         return;
       }
 
-      // Build canonical hotkey string: modifiers first, then the key
+      // Build canonical hotkey string
       const orderedMods = ["Ctrl", "Shift", "Alt", "Win"].filter(m => pressedKeys.includes(m));
       const hotkeyStr = [...orderedMods, ...nonModifiers].join("+");
       const type = recordingHotkey;
@@ -1282,7 +1284,7 @@ export const Settings: React.FC = () => {
         setHotkeyMsg({ text: `✓ ${type === "mic" ? "Voice" : "Text"} hotkey set to: ${hotkeyStr}`, success: true });
       } catch (e: any) {
         const msg = e?.toString() || "Failed.";
-        setHotkeyMsg({ text: `Failed: ${msg}. Try a different combination (e.g. Ctrl+Shift+A).`, success: false });
+        setHotkeyMsg({ text: `Failed: ${msg}. Try a different combination.`, success: false });
       }
     };
 
@@ -1398,7 +1400,9 @@ export const Settings: React.FC = () => {
           <Keyboard className="w-5 h-5 text-accent" />
           <div>
             <h3 className="font-bold text-text text-lg">Global Hotkeys</h3>
-            <p className="text-[13.5px] text-text-secondary mt-0.5">These work system-wide even when Omni's window is hidden.</p>
+            <p className="text-[13.5px] text-text-secondary mt-0.5">
+              These work system-wide even when Omni's window is hidden. Click a preset or record your own.
+            </p>
           </div>
         </div>
 
@@ -1411,41 +1415,84 @@ export const Settings: React.FC = () => {
         )}
 
         {[
-          { type: "mic" as const, label: "Voice Activation", desc: "Hold to speak, release to execute", value: micHotkey },
-          { type: "text" as const, label: "Quick Command (text)", desc: "Opens floating text input window", value: textHotkey },
+          {
+            type: "mic" as const,
+            label: "Voice Activation",
+            desc: "Hold to speak, release to execute. Recommended: Ctrl+Shift+A",
+            value: micHotkey,
+            presets: ["Ctrl+Shift+A", "Ctrl+Shift+Space", "Ctrl+Alt+Space", "F13", "F14"],
+          },
+          {
+            type: "text" as const,
+            label: "Quick Command (text)",
+            desc: "Opens floating text input. Recommended: Ctrl+Shift+T",
+            value: textHotkey,
+            presets: ["Ctrl+Shift+T", "Ctrl+Alt+T", "F15", "F16"],
+          },
         ].map((hk) => (
-          <div key={hk.type} className="p-5 bg-surface2 border border-border rounded-2xl flex items-center justify-between gap-4">
-            <div>
-              <p className="text-base font-bold text-text">{hk.label}</p>
-              <p className="text-sm text-text-secondary mt-0.5">{hk.desc}</p>
-            </div>
-            <div className="flex items-center gap-3.5 shrink-0">
-              <div className={`px-4 py-2.5 rounded-xl border font-mono text-sm font-black min-w-[150px] text-center transition-all ${
-                recordingHotkey === hk.type
-                  ? "border-accent bg-accent/10 text-accent animate-pulse"
-                  : "border-border bg-surface3 text-text"
-              }`}>
-                {recordingHotkey === hk.type
-                  ? (pressedKeys.length ? pressedKeys.join("+") : "Press combo…")
-                  : hk.value}
+          <div key={hk.type} className="p-5 bg-surface2 border border-border rounded-2xl space-y-3">
+            {/* Label + current value */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-base font-bold text-text">{hk.label}</p>
+                <p className="text-sm text-text-secondary mt-0.5">{hk.desc}</p>
               </div>
-              <button
-                onClick={() => startRecording(hk.type)}
-                className={`px-4.5 py-2.5 text-xs font-black rounded-xl border transition-colors ${
+              {/* Current hotkey display + record + reset */}
+              <div className="flex items-center gap-2.5 shrink-0">
+                <div className={`px-4 py-2.5 rounded-xl border font-mono text-sm font-black min-w-[150px] text-center transition-all ${
                   recordingHotkey === hk.type
-                    ? "bg-error/20 border-error/30 text-error"
-                    : "bg-accent hover:bg-accent-hover border-accent text-accent-contrast"
-                }`}
-              >
-                {recordingHotkey === hk.type ? "Cancel" : "Record"}
-              </button>
-              <button
-                onClick={() => resetHotkey(hk.type)}
-                title="Reset to default"
-                className="p-2.5 text-text-muted hover:text-text border border-border bg-surface3 rounded-xl transition-colors"
-              >
-                <RefreshCw className="w-4 h-4" />
-              </button>
+                    ? "border-accent bg-accent/10 text-accent animate-pulse"
+                    : "border-border bg-surface3 text-text"
+                }`}>
+                  {recordingHotkey === hk.type
+                    ? (pressedKeys.length ? pressedKeys.join("+") : "Press any key…")
+                    : hk.value}
+                </div>
+                <button
+                  onClick={() => startRecording(hk.type)}
+                  className={`px-4 py-2.5 text-xs font-black rounded-xl border transition-colors ${
+                    recordingHotkey === hk.type
+                      ? "bg-error/20 border-error/30 text-error"
+                      : "bg-accent hover:bg-accent-hover border-accent text-accent-contrast"
+                  }`}
+                >
+                  {recordingHotkey === hk.type ? "Cancel" : "Record"}
+                </button>
+                <button
+                  onClick={() => resetHotkey(hk.type)}
+                  title="Reset to default"
+                  className="p-2.5 text-text-muted hover:text-text border border-border bg-surface3 rounded-xl transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Quick preset chips */}
+            <div className="flex flex-wrap gap-2 pt-1">
+              <span className="text-[11px] font-black text-text-muted uppercase tracking-wide self-center mr-1">Presets:</span>
+              {hk.presets.map((preset) => (
+                <button
+                  key={preset}
+                  onClick={async () => {
+                    try {
+                      await invoke("set_hotkey", { hotkeyType: hk.type, hotkeyValue: preset });
+                      if (hk.type === "mic") setMicHotkey(preset);
+                      else setTextHotkey(preset);
+                      setHotkeyMsg({ text: `✓ ${hk.type === "mic" ? "Voice" : "Text"} hotkey set to: ${preset}`, success: true });
+                    } catch (e: any) {
+                      setHotkeyMsg({ text: `Failed: ${e?.toString() || "Unknown error"}. Try a different combination.`, success: false });
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[11.5px] font-mono font-bold border transition-colors ${
+                    hk.value === preset
+                      ? "bg-accent/15 border-accent/30 text-accent"
+                      : "bg-surface3 border-border text-text-secondary hover:border-border-light hover:text-text"
+                  }`}
+                >
+                  {preset}
+                </button>
+              ))}
             </div>
           </div>
         ))}
@@ -1899,6 +1946,7 @@ export const Settings: React.FC = () => {
 
               <p className="text-xs text-text-muted leading-relaxed">
                 Press any modifier (Ctrl, Shift, Alt) plus a key.<br />
+                Or press a function key alone (F13, F14, F15…).<br />
                 Release keys to save. Press <kbd className="px-1.5 py-0.5 rounded bg-surface3 border border-border text-[10px]">Esc</kbd> to cancel.
               </p>
 
